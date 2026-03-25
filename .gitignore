@@ -1,0 +1,12 @@
+.env
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+*.db
+logs/
+citation_mentions_first_rows.csv
+
+.DS_Store

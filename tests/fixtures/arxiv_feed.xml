@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <entry>
+    <id>http://arxiv.org/abs/2603.15726v1</id>
+    <updated>2024-06-11T17:59:00Z</updated>
+    <published>2024-06-11T17:59:00Z</published>
+    <title>MacNet: A Structured Multi-Agent Collaboration Architecture</title>
+    <summary>Sample abstract for testing citation pipeline.</summary>
+    <arxiv:primary_category term="cs.AI" />
+  </entry>
+</feed>

@@ -1,0 +1,59 @@
+{
+  "latex_parse": {
+    "paper_id": "2603.15726v1",
+    "body_text": [
+      {
+        "section": "Introduction",
+        "sec_num": "1",
+        "text": "Recent works such as ReAct BIBREF0 and TravelPlanner BIBREF1 demonstrate strong planning and reasoning behavior.",
+        "cite_spans": [
+          {"start": 26, "end": 33, "text": "BIBREF0", "ref_id": "BIBREF0"},
+          {"start": 52, "end": 59, "text": "BIBREF1", "ref_id": "BIBREF1"}
+        ],
+        "ref_spans": [],
+        "eq_spans": []
+      },
+      {
+        "section": "Method",
+        "sec_num": "2",
+        "text": "Following previous studies BIBREF2, we adopt API Match and Correctness as metrics.",
+        "cite_spans": [
+          {"start": 27, "end": 34, "text": "BIBREF2", "ref_id": "BIBREF2"}
+        ],
+        "ref_spans": [],
+        "eq_spans": []
+      },
+      {
+        "section": "Conclusion",
+        "sec_num": "3",
+        "text": "Our method improves robustness without additional citations.",
+        "cite_spans": [],
+        "ref_spans": [],
+        "eq_spans": []
+      }
+    ],
+    "bib_entries": {
+      "BIBREF0": {
+        "title": "ReAct",
+        "authors": [{"first": "Shunyu", "last": "Yao"}],
+        "year": 2023,
+        "venue": "ICLR",
+        "raw_text": "Shunyu Yao et al. 2023. ReAct."
+      },
+      "BIBREF1": {
+        "title": "TravelPlanner",
+        "authors": [{"first": "Jane", "last": "Doe"}],
+        "year": 2024,
+        "venue": "ACL",
+        "raw_text": "Jane Doe. 2024. TravelPlanner."
+      },
+      "BIBREF2": {
+        "title": "Tool Learning Evaluation",
+        "authors": [{"first": "Alex", "last": "Smith"}],
+        "year": 2022,
+        "venue": "NeurIPS",
+        "raw_text": "Alex Smith. 2022. Tool Learning Evaluation."
+      }
+    }
+  }
+}

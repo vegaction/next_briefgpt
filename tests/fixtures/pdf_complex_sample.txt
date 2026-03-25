@@ -1,0 +1,19 @@
+MiroThinker-1.7 & H1 Technical Report
+arXiv:2603.15726v1  [cs.CL]  16 Mar 2026
+
+1. Introduction
+Recent work [1–3] shows robust planning
+behavior in agents.
+
+47.7 49.5
+
+2. Metrics
+Following [4, 5], we report API Match and
+Correctness.
+
+References
+[1] Alpha Team. Alpha systems for planning.
+[2] Beta Team. Beta benchmark methods.
+[3] Gamma Team. Gamma analysis of agents.
+[4] Delta Team. Delta metrics for evaluation.
+[5] Epsilon Team. Epsilon study of correctness.
