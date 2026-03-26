@@ -20,6 +20,7 @@ from briefgpt_arxiv.schemas import (
 from briefgpt_arxiv.services.crawler import CrawlerService
 from briefgpt_arxiv.services.extractor import ExtractionConfigurationError, ExtractorService
 from briefgpt_arxiv.services.parser import ParserService
+from briefgpt_arxiv.utils import arxiv_version_number, split_arxiv_id
 
 app = FastAPI(title="briefgpt arXiv citations")
 init_db()
@@ -42,6 +43,22 @@ def build_extraction_view(mention: CitationMention) -> CitationExtractionView | 
     )
 
 
+def resolve_paper(session: Session, identifier: str) -> Paper | None:
+    arxiv_id, version = split_arxiv_id(identifier)
+    if version is not None:
+        return session.scalar(
+            select(Paper).where(
+                Paper.arxiv_id == arxiv_id,
+                Paper.version == version,
+            )
+        )
+
+    candidates = list(session.scalars(select(Paper).where(Paper.arxiv_id == arxiv_id)))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda paper: arxiv_version_number(paper.version))
+
+
 @app.post("/crawl/arxiv", response_model=list[CrawlResponseItem])
 def crawl_arxiv(request: CrawlRequest, session: Session = Depends(get_db)) -> list[CrawlResponseItem]:
     if not request.arxiv_ids:
@@ -51,7 +68,7 @@ def crawl_arxiv(request: CrawlRequest, session: Session = Depends(get_db)) -> li
         CrawlResponseItem(
             paper_id=paper.id,
             arxiv_id=paper.arxiv_id,
-            version=paper.current_version or "v1",
+            version=paper.version,
             status=paper.ingest_status,
         )
         for paper in papers
@@ -91,7 +108,7 @@ def extract_paper(paper_id: int, session: Session = Depends(get_db)) -> ExtractR
 
 @app.get("/papers/{arxiv_id}", response_model=PaperView)
 def get_paper(arxiv_id: str, session: Session = Depends(get_db)) -> PaperView:
-    paper = session.scalar(select(Paper).where(Paper.arxiv_id == arxiv_id))
+    paper = resolve_paper(session, arxiv_id)
     if paper is None:
         raise HTTPException(status_code=404, detail=f"Unknown paper {arxiv_id}")
     return PaperView.model_validate(paper, from_attributes=True)
@@ -99,7 +116,7 @@ def get_paper(arxiv_id: str, session: Session = Depends(get_db)) -> PaperView:
 
 @app.get("/papers/{arxiv_id}/references", response_model=list[PaperReferenceView])
 def get_paper_references(arxiv_id: str, session: Session = Depends(get_db)) -> list[PaperReferenceView]:
-    paper = session.scalar(select(Paper).where(Paper.arxiv_id == arxiv_id))
+    paper = resolve_paper(session, arxiv_id)
     if paper is None:
         raise HTTPException(status_code=404, detail=f"Unknown paper {arxiv_id}")
     references = list(
@@ -136,6 +153,8 @@ def get_paper_references(arxiv_id: str, session: Session = Depends(get_db)) -> l
                 title=reference.title,
                 year=reference.year,
                 venue=reference.venue,
+                cited_arxiv_id=reference.cited_arxiv_id,
+                cited_version=reference.cited_version,
                 mentions=mentions,
             )
         )
@@ -174,6 +193,7 @@ def search_citations(
         CitationSearchItem(
             mention_id=mention.id,
             paper_arxiv_id=mention.paper_reference.paper.arxiv_id,
+            paper_version=mention.paper_reference.paper.version,
             paper_title=mention.paper_reference.paper.title,
             local_ref_id=mention.paper_reference.local_ref_id,
             section_title=get_mention_section_title(mention),

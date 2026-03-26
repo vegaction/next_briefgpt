@@ -21,15 +21,16 @@ class TimestampMixin:
 
 class Paper(TimestampMixin, Base):
     __tablename__ = "papers"
+    __table_args__ = (UniqueConstraint("arxiv_id", "version", name="uq_paper_arxiv_version"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    arxiv_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    arxiv_id: Mapped[str] = mapped_column(String(64), index=True)
+    version: Mapped[str] = mapped_column(String(32), default="v1")
     title: Mapped[str] = mapped_column(Text)
     abstract: Mapped[str] = mapped_column(Text, default="")
     primary_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at_source: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    current_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     ingest_status: Mapped[str] = mapped_column(String(32), default="discovered", index=True)
     parse_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     parsed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -64,6 +65,8 @@ class PaperReference(TimestampMixin, Base):
     authors_json: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     venue: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cited_arxiv_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    cited_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     paper: Mapped["Paper"] = relationship(back_populates="references")
     citation_mentions: Mapped[list["CitationMention"]] = relationship(back_populates="paper_reference")

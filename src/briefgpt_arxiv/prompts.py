@@ -5,7 +5,7 @@ import json
 from jinja2 import Environment, StrictUndefined
 
 PARSER_REPAIR_PROMPT_VERSION = "gemini-parser-repair-v1"
-EXTRACTOR_PROMPT_VERSION = "gemini-citation-extractor-v5"
+EXTRACTOR_PROMPT_VERSION = "gemini-citation-extractor-v7"
 
 
 PROMPT_TEMPLATE_ENV = Environment(undefined=StrictUndefined, autoescape=False)
@@ -32,6 +32,7 @@ EXTRACTION_JSON_SCHEMA = {
                             "dataset",
                             "metric",
                             "definition",
+                            "benchmark",
                             "other",
                         ],
                     },
@@ -58,7 +59,7 @@ PARSER_REPAIR_JSON_SCHEMA = {
         "cleaned_text": {"type": "string"},
         "used_repair": {"type": "boolean"},
     },
-    "required": ["raw_citation_keys", "cleaned_text", "used_repair"],
+    "required": ["raw_citation_keys", "cleaned_text"],
     "additionalProperties": False,
 }
 
@@ -69,17 +70,23 @@ You repair citation-bearing academic text blocks. Recover raw citation keys when
 
 
 PARSER_REPAIR_USER_TEMPLATE = """
-{
-  "task": "Repair a citation-bearing text block for downstream parsing.",
-  "rules": [
-    "Keep the original meaning unchanged.",
-    "Do not invent citation keys.",
-    "Return raw_citation_keys using the citation labels visible or inferable from the text.",
-    "If no repair is needed, return the original text and used_repair=false."
-  ],
-  "candidate_keys": {{ candidate_keys | tojson }},
-  "raw_text": {{ raw_text | tojson }}
-}
+## Task
+Repair this citation-bearing academic text block for downstream parsing.
+
+## Rules
+- Keep the original meaning unchanged.
+- Do not invent citation keys.
+- Return `raw_citation_keys` using the citation labels visible or inferable from the text.
+
+{% if candidate_keys %}
+## Candidate Keys
+{{ candidate_keys | tojson }}
+{% endif %}
+
+## Raw Text
+```text
+{{ raw_text }}
+```
 """.strip()
 
 
@@ -100,10 +107,11 @@ Annotate pre-extracted citation mentions with citation semantics.
 - `summary` should be a retrieval-oriented note about the cited work, not just a shortened sentence.
 - `summary` should capture the cited paper's core idea, contribution, benchmark role, or a substantive evaluation/discussion of it in this paper.
 - `summary` may synthesize evidence from the full `raw_text`, the candidate `sentence_text`, and the candidate's embedded reference metadata.
+- Prefer `summary` to have an explicit subject, ideally naming the cited work, method, benchmark, or authors instead of using a subjectless fragment.
+- When possible, start `summary` directly with the cited work, method, benchmark, dataset, or system name.
+- Avoid bibliographic lead-ins such as `Yao et al. (2024) introduce ...`, `Smith et al. propose ...`, or `Brown et al. present ...` when the cited work name can be used as the subject instead.
 - When this paper discusses the cited work in a nuanced way, preserve the evaluative signal instead of flattening it into a neutral description.
 - Pay special attention to comparisons, tradeoffs, limitations, failure cases, scope boundaries, or reasons the cited work is preferred or not preferred in this paper.
-- Keep `summary` compact: usually one sentence or two short clauses.
-- Do not waste `summary` on generic framing about what the current paper is doing; focus on the cited work and why it matters here.
 - Prefer crisp, information-dense summaries that will help a downstream deep research agent retrieve the right cited paper later.
 
 ## Section Title

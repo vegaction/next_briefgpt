@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
 
@@ -37,17 +38,27 @@ class GeminiClient:
 
     def _post(self, payload: dict) -> dict:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-        response = httpx.post(
-            url,
-            headers={
-                "x-goog-api-key": self.api_key,
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=60.0,
-        )
-        response.raise_for_status()
-        return response.json()
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = httpx.post(
+                    url,
+                    headers={
+                        "x-goog-api-key": self.api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=60.0,
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPError as exc:
+                last_error = exc
+                if attempt == 2:
+                    break
+                time.sleep(1.0 * (attempt + 1))
+        assert last_error is not None
+        raise last_error
 
     @staticmethod
     def _extract_text(response_json: dict) -> str:

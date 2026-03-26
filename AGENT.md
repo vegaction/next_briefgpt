@@ -67,3 +67,4 @@ Use `AGENT.md` for the short version.
 - Breaking changes are acceptable when they improve the actual system.
 - Do not add compatibility layers without a current need.
 - Optimize the knowledge base first, not future product layers.
+- Prefer the local virtual environment for tests and validation commands. The bare local Python environment may be missing project dependencies, so use `.venv` binaries when available.

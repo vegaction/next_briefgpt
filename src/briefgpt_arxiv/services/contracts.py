@@ -13,6 +13,7 @@ class ParseInputSelection:
 class ParseRunResult:
     paper_id: int
     arxiv_id: str
+    version: str
     source_artifact_type: str
     source_artifact_uri: str
     sections_created: int
@@ -29,6 +30,7 @@ class ParseRunResult:
 class ExtractionRunResult:
     paper_id: int
     arxiv_id: str
+    version: str
     mentions_created: int
     extractions_created: int
     cleanup_performed: bool
@@ -43,6 +45,7 @@ class ExtractionRunResult:
 class PipelineRunResult:
     paper_id: int
     arxiv_id: str
+    version: str
     crawl_status: str
     parse: ParseRunResult
     extract: ExtractionRunResult

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import sys
 from pathlib import Path
 
@@ -20,7 +19,7 @@ from briefgpt_arxiv.services.extractor import ExtractorService
 from briefgpt_arxiv.services.jobs import JobTracker
 from briefgpt_arxiv.services.orchestrator import OrchestratorService
 from briefgpt_arxiv.services.parser import ParserService
-from briefgpt_arxiv.utils import sha256sum
+from briefgpt_arxiv.utils import format_arxiv_id, sha256sum, split_arxiv_id
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,43 +45,37 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def split_versioned_arxiv_id(arxiv_id: str) -> tuple[str, str | None]:
-    match = re.match(r"^(?P<base>.+?)(?P<version>v\d+)$", arxiv_id)
-    if match is None:
-        return arxiv_id, None
-    return match.group("base"), match.group("version")
-
-
 def resolve_local_artifact_dir(arxiv_id: str) -> tuple[Path, str]:
-    _, version = split_versioned_arxiv_id(arxiv_id)
+    base_arxiv_id, version = split_arxiv_id(arxiv_id)
     if version is None:
         raise ValueError(
             f"Local artifact mode requires a versioned arXiv id like `2603.15726v1`; got {arxiv_id!r}."
         )
-    artifact_dir = settings.artifact_root / arxiv_id / version
+    artifact_dir = settings.artifact_root / base_arxiv_id / version
     if not artifact_dir.exists():
         raise ValueError(f"Local artifact directory not found: {artifact_dir}")
     return artifact_dir, version
 
 
 def upsert_local_artifact_paper(session, arxiv_id: str) -> Paper:
+    base_arxiv_id, input_version = split_arxiv_id(arxiv_id)
     artifact_dir, version = resolve_local_artifact_dir(arxiv_id)
-    paper = session.query(Paper).filter_by(arxiv_id=arxiv_id).one_or_none()
+    paper = session.query(Paper).filter_by(arxiv_id=base_arxiv_id, version=input_version or version).one_or_none()
     if paper is None:
         paper = Paper(
-            arxiv_id=arxiv_id,
-            title=arxiv_id,
+            arxiv_id=base_arxiv_id,
+            version=version,
+            title=format_arxiv_id(base_arxiv_id, version),
             abstract="",
-            current_version=version,
             ingest_status="fetched",
             parse_status="pending",
         )
         session.add(paper)
         session.flush()
     else:
-        paper.current_version = version
+        paper.version = version
         if paper.title is None or not paper.title.strip():
-            paper.title = arxiv_id
+            paper.title = format_arxiv_id(base_arxiv_id, version)
         if paper.ingest_status == "discovered":
             paper.ingest_status = "fetched"
 
@@ -135,6 +128,7 @@ def run_local_artifact_pipeline(
             PipelineRunResult(
                 paper_id=paper.id,
                 arxiv_id=paper.arxiv_id,
+                version=paper.version,
                 crawl_status="local-artifacts",
                 parse=parse_result,
                 extract=extract_result,
@@ -166,9 +160,11 @@ def main() -> int:
         {
             "paper_id": result.paper_id,
             "arxiv_id": result.arxiv_id,
+            "version": result.version,
             "crawl_status": result.crawl_status,
             "parse": {
                 "status": result.parse.status,
+                "version": result.parse.version,
                 "source_artifact_type": result.parse.source_artifact_type,
                 "sections_created": result.parse.sections_created,
                 "references_created": result.parse.references_created,
@@ -177,6 +173,7 @@ def main() -> int:
             },
             "extract": {
                 "status": result.extract.status,
+                "version": result.extract.version,
                 "model_name": result.extract.model_name,
                 "mentions_created": result.extract.mentions_created,
                 "extractions_created": result.extract.extractions_created,
@@ -190,7 +187,10 @@ def main() -> int:
         return 0
 
     for item in payload:
-        print(f"{item['arxiv_id']} -> paper_id={item['paper_id']} crawl={item['crawl_status']}")
+        print(
+            f"{format_arxiv_id(item['arxiv_id'], item['version'])} "
+            f"-> paper_id={item['paper_id']} crawl={item['crawl_status']}"
+        )
         print(
             "  "
             f"parse={item['parse']['status']} source={item['parse']['source_artifact_type']} "

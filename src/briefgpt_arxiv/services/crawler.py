@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,7 +12,7 @@ from sqlalchemy.orm import Session
 from briefgpt_arxiv.config import settings
 from briefgpt_arxiv.models import Artifact, Paper
 from briefgpt_arxiv.services.jobs import JobTracker
-from briefgpt_arxiv.utils import ensure_parent, sha256sum
+from briefgpt_arxiv.utils import ensure_parent, format_arxiv_id, sha256sum, split_arxiv_id
 
 
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
@@ -68,14 +67,14 @@ class ArxivClient:
         category_element = entry.find("arxiv:primary_category", ATOM_NS)
         if category_element is not None:
             primary_category = category_element.attrib.get("term")
-        version_match = re.search(r"v\d+$", entry_id)
-        version = version_match.group(0) if version_match else "v1"
-        pdf_url = f"https://arxiv.org/pdf/{entry_id}.pdf"
-        source_url = f"https://arxiv.org/e-print/{entry_id}"
+        arxiv_id, version = split_arxiv_id(entry_id)
+        versioned_id = format_arxiv_id(arxiv_id, version or "v1")
+        pdf_url = f"https://arxiv.org/pdf/{versioned_id}.pdf"
+        source_url = f"https://arxiv.org/e-print/{versioned_id}"
 
         return ArxivPaperRecord(
-            arxiv_id=entry_id,
-            version=version,
+            arxiv_id=arxiv_id,
+            version=version or "v1",
             title=title,
             abstract=abstract,
             primary_category=primary_category,
@@ -121,9 +120,19 @@ class CrawlerService:
         return papers
 
     def _upsert_paper(self, record: ArxivPaperRecord) -> Paper:
-        paper = self.session.scalar(select(Paper).where(Paper.arxiv_id == record.arxiv_id))
+        paper = self.session.scalar(
+            select(Paper).where(
+                Paper.arxiv_id == record.arxiv_id,
+                Paper.version == record.version,
+            )
+        )
         if paper is None:
-            paper = Paper(arxiv_id=record.arxiv_id, title=record.title, abstract=record.abstract)
+            paper = Paper(
+                arxiv_id=record.arxiv_id,
+                version=record.version,
+                title=record.title,
+                abstract=record.abstract,
+            )
             self.session.add(paper)
             self.session.flush()
         paper.title = record.title
@@ -131,13 +140,12 @@ class CrawlerService:
         paper.primary_category = record.primary_category
         paper.published_at = record.published_at
         paper.updated_at_source = record.updated_at
-        paper.current_version = record.version
         if not paper.parse_status:
             paper.parse_status = "pending"
         return paper
 
     def _persist_artifact(self, paper: Paper, artifact_type: str, source_url: str, suffix: str) -> None:
-        destination = self.artifact_root / paper.arxiv_id / (paper.current_version or "v1") / f"{artifact_type}{suffix}"
+        destination = self.artifact_root / paper.arxiv_id / paper.version / f"{artifact_type}{suffix}"
         checksum, size_bytes = self.client.download(source_url, destination)
         artifact = self.session.scalar(
             select(Artifact).where(

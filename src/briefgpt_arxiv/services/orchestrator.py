@@ -39,6 +39,7 @@ class OrchestratorService:
                 PipelineRunResult(
                     paper_id=paper.id,
                     arxiv_id=paper.arxiv_id,
+                    version=paper.version,
                     crawl_status=paper.ingest_status,
                     parse=parse_result,
                     extract=extract_result,

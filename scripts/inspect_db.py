@@ -21,6 +21,7 @@ from briefgpt_arxiv.models import (  # noqa: E402
     Paper,
     PaperReference,
 )
+from briefgpt_arxiv.utils import arxiv_version_number, split_arxiv_id  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -99,8 +100,8 @@ def run_overview() -> None:
                 {
                     "id": paper.id,
                     "arxiv_id": paper.arxiv_id,
+                    "version": paper.version,
                     "title": paper.title,
-                    "current_version": paper.current_version,
                     "parse_status": paper.parse_status,
                     "ingest_status": paper.ingest_status,
                 }
@@ -109,9 +110,24 @@ def run_overview() -> None:
         )
 
 
+def apply_paper_filter(stmt, arxiv_id: str):
+    base_arxiv_id, version = split_arxiv_id(arxiv_id)
+    stmt = stmt.where(Paper.arxiv_id == base_arxiv_id)
+    if version is not None:
+        stmt = stmt.where(Paper.version == version)
+    return stmt
+
+
 def run_paper(arxiv_id: str) -> None:
     with SessionLocal() as session:
-        paper = session.scalar(select(Paper).where(Paper.arxiv_id == arxiv_id))
+        base_arxiv_id, version = split_arxiv_id(arxiv_id)
+        if version is None:
+            candidates = list(session.scalars(select(Paper).where(Paper.arxiv_id == base_arxiv_id)))
+            paper = max(candidates, key=lambda item: arxiv_version_number(item.version), default=None)
+        else:
+            paper = session.scalar(
+                select(Paper).where(Paper.arxiv_id == base_arxiv_id, Paper.version == version)
+            )
         if paper is None:
             print(f"No paper found for {arxiv_id}")
             return
@@ -121,8 +137,8 @@ def run_paper(arxiv_id: str) -> None:
                 {
                     "id": paper.id,
                     "arxiv_id": paper.arxiv_id,
+                    "version": paper.version,
                     "title": paper.title,
-                    "current_version": paper.current_version,
                     "parse_status": paper.parse_status,
                     "ingest_status": paper.ingest_status,
                 }
@@ -186,7 +202,7 @@ def run_mentions(arxiv_id: str | None, limit: int) -> None:
             .limit(limit)
         )
         if arxiv_id:
-            stmt = stmt.where(Paper.arxiv_id == arxiv_id)
+            stmt = apply_paper_filter(stmt, arxiv_id)
         mentions = list(session.scalars(stmt))
         print_rows(
             [
@@ -219,7 +235,7 @@ def run_extractions(arxiv_id: str | None, limit: int) -> None:
             .limit(limit)
         )
         if arxiv_id:
-            stmt = stmt.where(Paper.arxiv_id == arxiv_id)
+            stmt = apply_paper_filter(stmt, arxiv_id)
         mentions = list(session.scalars(stmt))
         print_rows(
             [
@@ -247,7 +263,7 @@ def run_blocks(arxiv_id: str | None, limit: int) -> None:
             .limit(limit)
         )
         if arxiv_id:
-            stmt = stmt.where(Paper.arxiv_id == arxiv_id)
+            stmt = apply_paper_filter(stmt, arxiv_id)
         blocks = list(session.scalars(stmt))
         print_rows(
             [

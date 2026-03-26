@@ -17,6 +17,7 @@ from briefgpt_arxiv.services.extractor import (
     ExtractionConfigurationError,
     ExtractorService,
     build_citation_candidates,
+    normalize_extracted_summary,
 )
 from tests.helpers import get_session, reset_database
 
@@ -51,10 +52,9 @@ class ExtractorServiceTests(TestCase):
     def setUp(self) -> None:
         reset_database()
         self.session = get_session()
-        paper = Paper(arxiv_id="2603.15726v1", title="Sample", abstract="A", ingest_status="parsed")
+        paper = Paper(arxiv_id="2603.15726", version="v1", title="Sample", abstract="A", ingest_status="parsed")
         self.session.add(paper)
         self.session.flush()
-        paper.current_version = "v1"
         paper.parse_status = "parsed"
         self.session.flush()
         block_text = "Recent works such as ReAct BIBREF0 and TravelPlanner BIBREF1 demonstrate strong planning behavior."
@@ -161,3 +161,29 @@ class ExtractorServiceTests(TestCase):
             ],
             candidates,
         )
+
+    def test_normalize_extracted_summary_removes_author_year_lead_in(self) -> None:
+        summary = (
+            "Yao et al. (2024) introduce Tau-bench, a benchmark focusing on "
+            "tool-agent-user interaction within real-world domains."
+        )
+
+        normalized = normalize_extracted_summary(
+            summary=summary,
+            citation_mention="Tau-bench",
+        )
+
+        self.assertEqual(
+            "Tau-bench, a benchmark focusing on tool-agent-user interaction within real-world domains.",
+            normalized,
+        )
+
+    def test_normalize_extracted_summary_keeps_non_bibliographic_summary(self) -> None:
+        summary = "Tau-bench is used as a benchmark for real-world tool-agent-user interaction."
+
+        normalized = normalize_extracted_summary(
+            summary=summary,
+            citation_mention="Tau-bench",
+        )
+
+        self.assertEqual(summary, normalized)

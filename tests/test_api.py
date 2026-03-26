@@ -42,7 +42,7 @@ class ApiTests(TestCase):
         self.tempdir.cleanup()
 
     def test_parse_extract_and_query_endpoints(self) -> None:
-        paper = Paper(arxiv_id="2603.15726v1", title="Sample", abstract="A", current_version="v1", ingest_status="fetched")
+        paper = Paper(arxiv_id="2603.15726", version="v1", title="Sample", abstract="A", ingest_status="fetched")
         self.session.add(paper)
         self.session.flush()
         paper.parse_status = "pending"
@@ -64,22 +64,27 @@ class ApiTests(TestCase):
         self.assertEqual(200, paper_response.status_code)
         self.assertEqual(200, refs_response.status_code)
         self.assertEqual(200, search_response.status_code)
-        self.assertEqual("2603.15726v1", paper_response.json()["arxiv_id"])
+        self.assertEqual("2603.15726", paper_response.json()["arxiv_id"])
+        self.assertEqual("v1", paper_response.json()["version"])
         self.assertEqual("parsed", paper_response.json()["parse_status"])
         self.assertGreaterEqual(len(refs_response.json()), 3)
         self.assertGreaterEqual(self.session.query(CitationMention).count(), 1)
         first_mention = refs_response.json()[0]["mentions"][0]
         self.assertIn("section_title", first_mention)
+        self.assertIn("cited_arxiv_id", refs_response.json()[0])
         extraction = first_mention["extraction"]
         if extraction is not None:
             self.assertNotIn("evidence_text", extraction)
             self.assertNotIn("confidence", extraction)
+        first_search = search_response.json()[0]
+        self.assertEqual("2603.15726", first_search["paper_arxiv_id"])
+        self.assertEqual("v1", first_search["paper_version"])
 
     def test_extract_endpoint_returns_503_without_llm_configuration(self) -> None:
         original_api_key = settings.gemini_api_key
         settings.gemini_api_key = None
         try:
-            paper = Paper(arxiv_id="2603.15726v1", title="Sample", abstract="A", current_version="v1", ingest_status="parsed")
+            paper = Paper(arxiv_id="2603.15726", version="v1", title="Sample", abstract="A", ingest_status="parsed")
             self.session.add(paper)
             self.session.commit()
 

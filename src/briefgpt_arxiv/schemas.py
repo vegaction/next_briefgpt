@@ -57,18 +57,20 @@ class PaperReferenceView(BaseModel):
     title: str | None
     year: int | None
     venue: str | None
+    cited_arxiv_id: str | None
+    cited_version: str | None
     mentions: list[CitationMentionView] = Field(default_factory=list)
 
 
 class PaperView(BaseModel):
     id: int
     arxiv_id: str
+    version: str
     title: str
     abstract: str
     primary_category: str | None
     published_at: datetime | None
     updated_at_source: datetime | None
-    current_version: str | None
     parse_status: str
     parsed_at: datetime | None
     ingest_status: str
@@ -77,6 +79,7 @@ class PaperView(BaseModel):
 class CitationSearchItem(BaseModel):
     mention_id: int
     paper_arxiv_id: str
+    paper_version: str
     paper_title: str
     local_ref_id: str
     section_title: str | None

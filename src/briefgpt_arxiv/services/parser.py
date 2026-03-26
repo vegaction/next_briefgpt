@@ -89,10 +89,16 @@ class GeminiParserRepairClient(ParserRepairClient):
             user_text=user_text,
             response_json_schema=PARSER_REPAIR_JSON_SCHEMA,
         )
+        raw_citation_keys = payload.get("raw_citation_keys", candidate_keys)
+        cleaned_text = payload.get("cleaned_text", raw_text)
+        used_repair = (
+            normalize_whitespace(cleaned_text) != normalize_whitespace(raw_text)
+            or list(raw_citation_keys) != list(candidate_keys)
+        )
         return ParseRepairResult(
-            raw_citation_keys=payload.get("raw_citation_keys", candidate_keys),
-            cleaned_text=payload.get("cleaned_text", raw_text),
-            used_repair=bool(payload.get("used_repair", False)),
+            raw_citation_keys=raw_citation_keys,
+            cleaned_text=cleaned_text,
+            used_repair=used_repair,
         )
 
 
@@ -421,7 +427,15 @@ class ParserService:
             paragraphs = [part.strip() for part in re.split(r"\n\s*\n", fragment) if part.strip()]
             for paragraph in paragraphs:
                 keys = self._extract_citation_keys(paragraph)
-                repaired = self.repair_client.repair(paragraph, keys)
+                should_repair = bool(keys) or "cite" in paragraph.lower()
+                if should_repair:
+                    repaired = self.repair_client.repair(paragraph, keys)
+                else:
+                    repaired = ParseRepairResult(
+                        raw_citation_keys=keys,
+                        cleaned_text=paragraph,
+                        used_repair=False,
+                    )
                 if not repaired.raw_citation_keys and not keys:
                     if "cite" not in paragraph.lower():
                         continue
@@ -747,6 +761,7 @@ class ParserService:
         return ParseRunResult(
             paper_id=paper.id,
             arxiv_id=paper.arxiv_id,
+            version=paper.version,
             source_artifact_type=selection.artifact_type,
             source_artifact_uri=selection.artifact_uri,
             sections_created=sections_created,

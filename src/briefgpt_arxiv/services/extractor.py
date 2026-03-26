@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
 import logging
+import re
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -297,6 +298,10 @@ class ExtractorService:
                         item.section_title,
                         item.summary,
                     )
+                    normalized_summary = normalize_extracted_summary(
+                        summary=item.summary,
+                        citation_mention=item.citation_mention,
+                    )
                     mention = CitationMention(
                         citation_block_id=block.id,
                         paper_reference_id=reference_map[item.raw_citation_key]["paper_reference_id"],
@@ -306,7 +311,7 @@ class ExtractorService:
                         model=self.client.model_name,
                         prompt_version=EXTRACTOR_PROMPT_VERSION,
                         intent_label=item.intent_label,
-                        summary=item.summary,
+                        summary=normalized_summary,
                         json_result={
                             "raw_citation_key": item.raw_citation_key,
                             "citation_mention": item.citation_mention,
@@ -314,7 +319,7 @@ class ExtractorService:
                             "section_title": item.section_title,
                             "mention_order": item.mention_order,
                             "intent_label": item.intent_label,
-                            "summary": item.summary,
+                            "summary": normalized_summary,
                         },
                         status="completed",
                     )
@@ -375,12 +380,40 @@ class ExtractorService:
         return ExtractionRunResult(
             paper_id=paper.id,
             arxiv_id=paper.arxiv_id,
+            version=paper.version,
             mentions_created=mentions_created,
             extractions_created=extractions_created,
             cleanup_performed=cleanup_performed,
             status=status,
             model_name=self.client.model_name,
         )
+
+
+def normalize_extracted_summary(*, summary: str, citation_mention: str) -> str:
+    normalized_summary = normalize_whitespace(summary)
+    normalized_mention = normalize_whitespace(citation_mention)
+    if not normalized_summary:
+        return normalized_summary
+    if not normalized_mention:
+        return normalized_summary
+
+    lowered_summary = normalized_summary.lower()
+    lowered_mention = normalized_mention.lower()
+    title_index = lowered_summary.find(lowered_mention)
+    if title_index <= 0:
+        return normalized_summary
+
+    lead_in = normalized_summary[:title_index]
+    if not re.search(r"\(\d{4}\)", lead_in):
+        return normalized_summary
+    if not re.search(
+        r"\b(introduce|introduces|introduced|present|presents|presented|propose|proposes|proposed|"
+        r"describe|describes|described|define|defines|defined|develop|develops|developed|"
+        r"provide|provides|provided|study|studies|studied)\b",
+        lead_in.lower(),
+    ):
+        return normalized_summary
+    return normalized_summary[title_index:]
 
 
 def build_citation_candidates(

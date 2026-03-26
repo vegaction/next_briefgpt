@@ -17,6 +17,7 @@ from briefgpt_arxiv.config import settings
 from briefgpt_arxiv.db import SessionLocal, init_db
 from briefgpt_arxiv.models import Paper
 from briefgpt_arxiv.services.extractor import ExtractionConfigurationError, ExtractorService
+from briefgpt_arxiv.utils import format_arxiv_id, split_arxiv_id
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,7 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
 def resolve_paper(session, paper_ref: str) -> Paper | None:
     if paper_ref.isdigit():
         return session.get(Paper, int(paper_ref))
-    return session.scalar(select(Paper).where(Paper.arxiv_id == paper_ref))
+    arxiv_id, version = split_arxiv_id(paper_ref)
+    stmt = select(Paper).where(Paper.arxiv_id == arxiv_id)
+    if version is not None:
+        stmt = stmt.where(Paper.version == version)
+    return session.scalar(stmt)
 
 
 def main() -> int:
@@ -59,6 +64,7 @@ def main() -> int:
     payload = {
         "paper_id": result.paper_id,
         "arxiv_id": result.arxiv_id,
+        "version": result.version,
         "status": result.status,
         "model_name": result.model_name,
         "mentions_created": result.mentions_created,
@@ -70,7 +76,7 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
-    print(f"{payload['arxiv_id']} -> paper_id={payload['paper_id']}")
+    print(f"{format_arxiv_id(payload['arxiv_id'], payload['version'])} -> paper_id={payload['paper_id']}")
     print(
         "  "
         f"extract={payload['status']} model={payload['model_name']} "

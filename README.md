@@ -8,9 +8,9 @@ An arXiv MVP for citation-aware paper ingestion with three independently testabl
 
 The current data model is paper-centric:
 
-- `papers`: one row per arXiv paper, including `current_version`, `parse_status`, and `ingest_status`
+- `papers`: one row per arXiv paper version, keyed by `arxiv_id` + `version`
 - `artifacts`: downloaded or derived files for a paper, such as `pdf` and `pdf_text`
-- `paper_references`: references detected inside a paper
+- `paper_references`: references detected inside a paper, with optional `cited_arxiv_id` + `cited_version`
 - `citation_blocks`: parsed text chunks for a paper, including section metadata and citation-bearing subsets
 - `citation_mentions`: extracted mention-level citation semantics
 
@@ -73,7 +73,7 @@ uv run python scripts/inspect_db.py extractions --arxiv-id 2603.15726v1
 uv run python scripts/inspect_db.py blocks --arxiv-id 2603.15726v1
 uv run python scripts/inspect_db.py jobs --job-type parse
 uv run python scripts/inspect_db.py dump --limit 20
-uv run python scripts/inspect_db.py sql "SELECT id, arxiv_id, ingest_status FROM papers;"
+uv run python scripts/inspect_db.py sql "SELECT id, arxiv_id, version, ingest_status FROM papers;"
 ```
 
 To run the bundled local demo against the checked-in artifact for `2603.15726v1`:
@@ -93,7 +93,7 @@ uv run python scripts/run_pipeline.py 2603.15726v1 --mode local-artifacts --json
 ```
 
 `paper_id` is the primary workflow identifier for parse and extract operations.
-`arxiv_id` is used for read APIs such as `GET /papers/{arxiv_id}`.
+Read APIs accept either a canonical arXiv id such as `2603.15726` or a versioned id such as `2603.15726v1`.
 
 If you want to iterate on extraction only, you can run it directly against an already parsed paper:
 

@@ -5,10 +5,15 @@ import tarfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from briefgpt_arxiv.models import Artifact, CitationBlock, IngestionJob, Paper, PaperReference
-from briefgpt_arxiv.services.parser import ParseRepairResult, ParserRepairClient, ParserService
+from briefgpt_arxiv.services.parser import (
+    GeminiParserRepairClient,
+    ParseRepairResult,
+    ParserRepairClient,
+    ParserService,
+)
 from tests.helpers import FIXTURES, get_session, reset_database
 
 
@@ -28,10 +33,9 @@ class ParserServiceTests(TestCase):
     def setUp(self) -> None:
         reset_database()
         self.session = get_session()
-        self.paper = Paper(arxiv_id="2603.15726v1", title="Sample", abstract="A")
+        self.paper = Paper(arxiv_id="2603.15726", version="v1", title="Sample", abstract="A")
         self.session.add(self.paper)
         self.session.flush()
-        self.paper.current_version = "v1"
         self.paper.parse_status = "pending"
         self.session.commit()
         self.tempdir = TemporaryDirectory()
@@ -69,7 +73,8 @@ class ParserServiceTests(TestCase):
         result = ParserService(self.session).parse_paper(self.paper.id)
 
         self.assertEqual(self.paper.id, result.paper_id)
-        self.assertEqual("2603.15726v1", result.arxiv_id)
+        self.assertEqual("2603.15726", result.arxiv_id)
+        self.assertEqual("v1", result.version)
         self.assertEqual("structured_parse", result.source_artifact_type)
         self.assertEqual(str(structured_path), result.source_artifact_uri)
         self.assertFalse(result.cleanup_performed)
@@ -111,6 +116,59 @@ class ParserServiceTests(TestCase):
             .one()
         )
         self.assertIn("BIBREF2", repaired_block.raw_citation_keys)
+
+    def test_parse_source_skips_repair_for_paragraphs_without_citation_signal(self) -> None:
+        source_path = Path(self.tempdir.name) / "source.tex"
+        source_path.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\section{Intro}
+This paragraph has no references at all.
+
+We compare against prior work \cite{alpha2024}.
+
+\begin{thebibliography}{9}
+\bibitem{alpha2024} Alpha Systems for Planning. 2024.
+\end{thebibliography}
+\end{document}
+"""
+        )
+        artifact = Artifact(paper_id=self.paper.id, artifact_type="source", uri=str(source_path))
+        self.session.add(artifact)
+        self.session.commit()
+
+        repair_client = Mock(spec=ParserRepairClient)
+        repair_client.repair.return_value = ParseRepairResult(
+            raw_citation_keys=["alpha2024"],
+            cleaned_text="We compare against prior work alpha2024.",
+            used_repair=True,
+        )
+
+        service = ParserService(self.session, repair_client=repair_client)
+        _, refs, blocks = service.parse_paper(self.paper.id).as_tuple()
+
+        self.assertEqual(1, refs)
+        self.assertEqual(1, blocks)
+        self.assertEqual(1, repair_client.repair.call_count)
+        self.assertIn(r"\cite{alpha2024}", repair_client.repair.call_args.args[0])
+
+    def test_gemini_repair_client_derives_used_repair_without_model_flag(self) -> None:
+        client = GeminiParserRepairClient()
+
+        class StubGeminiClient:
+            def generate_json(self, **_kwargs) -> dict:
+                return {
+                    "raw_citation_keys": ["BIBREF0", "BIBREF2"],
+                    "cleaned_text": "Text with BIBREF2",
+                }
+
+        client.client = StubGeminiClient()
+        repaired = client.repair("Text with \\mycite{BIBREF2}", ["BIBREF0"])
+
+        self.assertEqual(["BIBREF0", "BIBREF2"], repaired.raw_citation_keys)
+        self.assertEqual("Text with BIBREF2", repaired.cleaned_text)
+        self.assertTrue(repaired.used_repair)
 
     def test_parse_source_tar_extracts_references_from_external_bib(self) -> None:
         source_path = Path(self.tempdir.name) / "source.tar"
