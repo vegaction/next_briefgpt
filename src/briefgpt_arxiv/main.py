@@ -149,7 +149,6 @@ def get_paper_references(arxiv_id: str, session: Session = Depends(get_db)) -> l
             PaperReferenceView(
                 id=reference.id,
                 local_ref_id=reference.local_ref_id,
-                raw_text=reference.raw_text,
                 title=reference.title,
                 year=reference.year,
                 venue=reference.venue,

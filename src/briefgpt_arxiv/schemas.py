@@ -53,7 +53,6 @@ class CitationMentionView(BaseModel):
 class PaperReferenceView(BaseModel):
     id: int
     local_ref_id: str
-    raw_text: str
     title: str | None
     year: int | None
     venue: str | None

@@ -60,7 +60,6 @@ class PaperReference(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     paper_id: Mapped[int] = mapped_column(ForeignKey("papers.id"), index=True)
     local_ref_id: Mapped[str] = mapped_column(String(128))
-    raw_text: Mapped[str] = mapped_column(Text)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     authors_json: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
