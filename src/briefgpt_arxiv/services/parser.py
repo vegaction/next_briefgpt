@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from briefgpt_arxiv.config import settings
-from briefgpt_arxiv.gemini import GeminiClient
+from briefgpt_arxiv.llm_client import BaseLLMClient, create_llm_client
 from briefgpt_arxiv.models import (
     Artifact,
     CitationBlock,
@@ -74,9 +74,9 @@ class ParserRepairClient:
         return ParseRepairResult(raw_citation_keys=candidate_keys, cleaned_text=raw_text, used_repair=False)
 
 
-class GeminiParserRepairClient(ParserRepairClient):
-    def __init__(self) -> None:
-        self.client = GeminiClient()
+class LLMParserRepairClient(ParserRepairClient):
+    def __init__(self, client: BaseLLMClient | None = None) -> None:
+        self.client = client or create_llm_client(settings.parser_llm)
 
     def repair(self, raw_text: str, candidate_keys: list[str]) -> ParseRepairResult:
         system_instruction = PROMPT_TEMPLATE_ENV.from_string(PARSER_REPAIR_SYSTEM_TEMPLATE).render()
@@ -89,8 +89,8 @@ class GeminiParserRepairClient(ParserRepairClient):
             user_text=user_text,
             response_json_schema=PARSER_REPAIR_JSON_SCHEMA,
         )
-        raw_citation_keys = payload.get("raw_citation_keys", candidate_keys)
-        cleaned_text = payload.get("cleaned_text", raw_text)
+        raw_citation_keys = payload["raw_citation_keys"]
+        cleaned_text = payload["cleaned_text"]
         used_repair = (
             normalize_whitespace(cleaned_text) != normalize_whitespace(raw_text)
             or list(raw_citation_keys) != list(candidate_keys)
@@ -109,7 +109,9 @@ class ParserService:
         if repair_client is not None:
             self.repair_client = repair_client
         else:
-            self.repair_client = GeminiParserRepairClient() if settings.gemini_api_key else ParserRepairClient()
+            self.repair_client = (
+                LLMParserRepairClient() if settings.has_llm_api_key(settings.parser_llm.provider) else ParserRepairClient()
+            )
 
     def parse_paper(self, paper_id: int, *, rerun: bool = True) -> ParseRunResult:
         paper = self.session.get(Paper, paper_id)
@@ -133,7 +135,7 @@ class ParserService:
 
         job = self.job_tracker.start(job_type="parse", target_id=paper_id)
         try:
-            _, parsed = self._parse_from_best_artifact(paper)
+            parsed = self._parse_selection(paper, selection)
             cleanup_performed = self._has_parse_outputs(paper_id)
             if cleanup_performed:
                 self.clear_parse_outputs(paper_id)
@@ -185,29 +187,32 @@ class ParserService:
             return ParseInputSelection(artifact_type="pdf", artifact_uri=artifact.uri)
         raise ValueError("No parseable artifact found.")
 
-    def _parse_from_best_artifact(self, paper: Paper) -> tuple[ParseInputSelection, ParsedDocument]:
-        selection = self._select_parse_input(paper)
+    def _parse_selection(self, paper: Paper, selection: ParseInputSelection) -> ParsedDocument:
         path = Path(selection.artifact_uri)
         if selection.artifact_type == "structured_parse":
-            return selection, self._parse_doc2json(path)
+            return self._parse_doc2json(path)
         if selection.artifact_type == "source":
-            if path.suffix == ".json":
-                return selection, self._parse_doc2json(path)
-            return selection, self._parse_source(path)
+            return self._parse_source(path)
         if selection.artifact_type == "pdf_text":
-            return selection, self._parse_pdf_text(path)
+            return self._parse_pdf_text(path)
         if selection.artifact_type == "pdf":
-            if path.suffix in {".txt", ".text"}:
-                return selection, self._parse_pdf_text(path)
-            return selection, self._parse_pdf(paper, path)
+            return self._parse_pdf(paper, path)
         raise ValueError(f"Unsupported parse input {selection.artifact_type}")
 
     def _parse_doc2json(self, path: Path) -> ParsedDocument:
         with path.open() as handle:
             payload = json.load(handle)
-        latex_parse = payload.get("latex_parse", payload)
+        latex_parse = payload.get("latex_parse")
+        if not isinstance(latex_parse, dict):
+            raise ValueError("structured_parse payload must contain a top-level 'latex_parse' object.")
+        bib_entries = latex_parse.get("bib_entries") or {}
+        if not isinstance(bib_entries, dict):
+            raise ValueError("structured_parse 'latex_parse.bib_entries' must be an object.")
+        body_items = latex_parse.get("body_text") or []
+        if not isinstance(body_items, list):
+            raise ValueError("structured_parse 'latex_parse.body_text' must be an array.")
         references = []
-        for local_ref_id, entry in latex_parse.get("bib_entries", {}).items():
+        for local_ref_id, entry in bib_entries.items():
             raw_text = entry.get("raw_text") or entry.get("title") or local_ref_id
             references.append(
                 ReferencePayload(
@@ -220,7 +225,6 @@ class ParserService:
                 )
             )
         sections = []
-        body_items = latex_parse.get("body_text", [])
         for index, item in enumerate(body_items):
             raw_text = normalize_whitespace(item.get("text", ""))
             if not raw_text:
@@ -427,18 +431,10 @@ class ParserService:
             paragraphs = [part.strip() for part in re.split(r"\n\s*\n", fragment) if part.strip()]
             for paragraph in paragraphs:
                 keys = self._extract_citation_keys(paragraph)
-                should_repair = bool(keys) or "cite" in paragraph.lower()
-                if should_repair:
-                    repaired = self.repair_client.repair(paragraph, keys)
-                else:
-                    repaired = ParseRepairResult(
-                        raw_citation_keys=keys,
-                        cleaned_text=paragraph,
-                        used_repair=False,
-                    )
-                if not repaired.raw_citation_keys and not keys:
-                    if "cite" not in paragraph.lower():
-                        continue
+                has_citation_signal = bool(keys) or "cite" in paragraph.lower()
+                if not has_citation_signal:
+                    continue
+                repaired = self.repair_client.repair(paragraph, keys)
                 if not repaired.raw_citation_keys:
                     continue
                 cleaned = self._clean_latex_text(repaired.cleaned_text)
@@ -777,7 +773,6 @@ class ParserService:
             ref = PaperReference(
                 paper_id=paper.id,
                 local_ref_id=payload.local_ref_id,
-                raw_text=payload.raw_text,
                 title=payload.title,
                 authors_json=payload.authors,
                 year=payload.year,

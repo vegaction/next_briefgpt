@@ -82,9 +82,9 @@ This is the main business-logic layer of the repository.
 
 ### 4. Provider and prompt layer
 
-`src/briefgpt_arxiv/gemini.py` and `src/briefgpt_arxiv/prompts.py`
+`src/briefgpt_arxiv/llm_client.py` and `src/briefgpt_arxiv/prompts.py`
 
-- centralizes Gemini API calls
+- centralizes Gemini and OpenAI-compatible LLM calls
 - centralizes prompt templates and JSON schemas
 - keeps model-specific logic out of parser and extractor flow control
 
@@ -107,7 +107,7 @@ Key repository paths:
 - `src/briefgpt_arxiv/db.py`
 - `src/briefgpt_arxiv/models.py`
 - `src/briefgpt_arxiv/schemas.py`
-- `src/briefgpt_arxiv/gemini.py`
+- `src/briefgpt_arxiv/llm_client.py`
 - `src/briefgpt_arxiv/prompts.py`
 - `src/briefgpt_arxiv/services/crawler.py`
 - `src/briefgpt_arxiv/services/parser.py`
@@ -129,7 +129,7 @@ Startup behavior:
 
 - `.env` is loaded manually if present
 - configuration is exposed through a `Settings` dataclass
-- important settings are `DATABASE_URL`, `ARTIFACT_ROOT`, `GEMINI_API_KEY`, `GEMINI_MODEL`, and `SUMMARY_DEBUG_LOG_PATH`
+- important settings are `DATABASE_URL`, `ARTIFACT_ROOT`, `OPEN_ROUTER_API_KEY`, `GEMINI_API_KEY`, `SUMMARY_DEBUG_LOG_PATH`, and `config.yaml:llm.parser` / `config.yaml:llm.extractor`
 
 Database construction lives in `src/briefgpt_arxiv/db.py`.
 
@@ -302,7 +302,7 @@ Primary objects:
 - `ReferencePayload`
 - `SectionPayload`
 - `ParserRepairClient`
-- `GeminiParserRepairClient`
+- `LLMParserRepairClient`
 
 Responsibilities:
 
@@ -364,7 +364,7 @@ Primary objects:
 
 - `ExtractorService`
 - `BaseExtractionClient`
-- `GeminiExtractionClient`
+- `LLMExtractionClient`
 - `ExtractionRunResult`
 - `CitationCandidate`
 - `ExtractedCitation`
@@ -385,8 +385,8 @@ Candidate generation behavior:
 
 LLM behavior:
 
-- extraction requires `GEMINI_API_KEY`
-- the Gemini client returns schema-constrained JSON
+- extraction requires credentials for the configured provider
+- the configured LLM client returns schema-constrained JSON
 - prompts and JSON schema are centralized in `prompts.py`
 - debug records are appended to `SUMMARY_DEBUG_LOG_PATH`
 
@@ -438,12 +438,14 @@ The same tracker is shared by crawl, parse, extract, and local-artifact restore 
 
 LLM behavior is deliberately centralized.
 
-### `gemini.py`
+### `llm_client.py`
 
-- wraps Gemini `generateContent`
+- exposes a provider-neutral LLM client interface
+- supports Gemini `generateContent`
+- supports OpenAI-compatible chat completions such as OpenRouter
 - supports `generate_json` and `generate_text`
-- raises early if no API key is configured
-- extracts plain text content from Gemini responses before JSON decoding
+- chooses the concrete provider from `config.yaml`
+- raises early if the configured provider is missing credentials
 
 ### `prompts.py`
 

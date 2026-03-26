@@ -106,7 +106,24 @@ uv run python scripts/run_extractor.py 1 --skip-if-ready
 
 - `DATABASE_URL`: SQLAlchemy URL, defaults to `sqlite:///./briefgpt.db`
 - `ARTIFACT_ROOT`: root directory for downloaded artifacts, defaults to `./artifacts`
-- `GEMINI_API_KEY`: Gemini API key used by all LLM-backed flows
-- `GEMINI_MODEL`: Gemini model name, defaults to `gemini-2.5-flash-lite`
+- `OPEN_ROUTER_API_KEY`: OpenRouter API key for the `openai_compatible` provider
+- `OPEN_ROUTER_MODEL`: default OpenRouter model when `config.yaml` does not specify one
+- `GEMINI_API_KEY`: Gemini API key for the `gemini` provider
+- `GEMINI_MODEL`: default Gemini model when `config.yaml` does not specify one
+- `OPENROUTER_REASONING_ENABLED`: enables OpenRouter reasoning mode, defaults to `true`
 
-If `GEMINI_API_KEY` is not set, parsing still works, but extraction is disabled because summary generation is LLM-only.
+LLM provider selection lives in `config.yaml`:
+
+```yaml
+llm:
+  parser:
+    provider: "openai_compatible"
+    model_name: "nvidia/nemotron-3-super-120b-a12b:free"
+  extractor:
+    provider: "openai_compatible"
+    model_name: "nvidia/nemotron-3-super-120b-a12b:free"
+```
+
+Supported providers are `openai_compatible` and `gemini`.
+
+If the configured provider for extraction does not have credentials, parsing still works, but extraction is disabled because summary generation is LLM-only.

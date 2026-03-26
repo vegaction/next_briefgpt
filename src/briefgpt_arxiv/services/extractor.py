@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from briefgpt_arxiv.config import settings
-from briefgpt_arxiv.gemini import GeminiClient
+from briefgpt_arxiv.llm_client import BaseLLMClient, create_llm_client
 from briefgpt_arxiv.models import (
     CitationBlock,
     CitationMention,
@@ -71,10 +71,10 @@ class BaseExtractionClient:
         raise NotImplementedError
 
 
-class GeminiExtractionClient(BaseExtractionClient):
-    def __init__(self) -> None:
-        self.client = GeminiClient()
-        self.model_name = settings.gemini_model
+class LLMExtractionClient(BaseExtractionClient):
+    def __init__(self, client: BaseLLMClient | None = None) -> None:
+        self.client = client or create_llm_client(settings.extractor_llm)
+        self.model_name = self.client.model_name
 
     def annotate_candidates(
         self,
@@ -84,6 +84,8 @@ class GeminiExtractionClient(BaseExtractionClient):
         references: dict[str, dict],
         debug_context: dict | None = None,
     ) -> list[ExtractedCitation]:
+        if not candidates:
+            return []
         prompt_candidates = [
             {
                 "mention_order": candidate.mention_order,
@@ -93,7 +95,6 @@ class GeminiExtractionClient(BaseExtractionClient):
                 "reference": {
                     "title": references.get(candidate.raw_citation_key, {}).get("title"),
                     "year": references.get(candidate.raw_citation_key, {}).get("year"),
-                    "raw_text": references.get(candidate.raw_citation_key, {}).get("raw_text"),
                 },
             }
             for candidate in candidates
@@ -140,12 +141,11 @@ class GeminiExtractionClient(BaseExtractionClient):
             payload={
                 "model_name": self.model_name,
                 "prompt_version": EXTRACTOR_PROMPT_VERSION,
-                "response_items": payload.get("items", []),
+                "response_items": payload["items"],
                 "response_payload": payload,
             },
         )
-        items = payload.get("items", [])
-        annotations = [CitationAnnotation(**item) for item in items]
+        annotations = [CitationAnnotation(**item) for item in payload["items"]]
         self._validate_annotations(candidates, annotations)
         annotations_by_order = {item.mention_order: item for item in annotations}
         return [
@@ -196,11 +196,9 @@ class GeminiExtractionClient(BaseExtractionClient):
 class ExtractorService:
     def __init__(self, session: Session, client: BaseExtractionClient | None = None):
         if client is None:
-            if not settings.gemini_api_key:
-                raise ExtractionConfigurationError(
-                    "Extraction requires GEMINI_API_KEY; heuristic summary fallback has been disabled."
-                )
-            client = GeminiExtractionClient()
+            if not settings.has_llm_api_key(settings.extractor_llm.provider):
+                raise ExtractionConfigurationError(f"Extraction requires credentials for provider {settings.extractor_llm.provider!r}.")
+            client = LLMExtractionClient()
         self.session = session
         self.client = client
         self.job_tracker = JobTracker(session)
@@ -244,7 +242,6 @@ class ExtractorService:
                 row.local_ref_id: {
                     "paper_reference_id": row.id,
                     "title": row.title,
-                    "raw_text": row.raw_text,
                     "year": row.year,
                 }
                 for row in reference_rows
@@ -252,12 +249,23 @@ class ExtractorService:
             mentions_created = 0
             extractions_created = 0
             for block in blocks:
+                missing_reference_keys = [key for key in block.raw_citation_keys if key not in reference_map]
+                if missing_reference_keys:
+                    logger.warning(
+                        "Skipping unknown citation keys before extraction paper_id=%s block_id=%s keys=%s",
+                        paper_id,
+                        block.id,
+                        missing_reference_keys,
+                    )
+                known_reference_keys = [key for key in block.raw_citation_keys if key in reference_map]
                 candidates = build_citation_candidates(
                     raw_text=block.raw_text,
                     section_title=block.section_title,
-                    raw_citation_keys=block.raw_citation_keys,
+                    raw_citation_keys=known_reference_keys,
                     references=reference_map,
                 )
+                if not candidates:
+                    continue
                 extracted = self.client.annotate_candidates(
                     candidates=candidates,
                     raw_text=block.raw_text,
@@ -281,15 +289,6 @@ class ExtractorService:
                     self.client.model_name,
                 )
                 for item in extracted:
-                    if item.raw_citation_key not in reference_map:
-                        logger.warning(
-                            "Skipping extracted summary for unknown citation key paper_id=%s block_id=%s key=%s summary=%r",
-                            paper_id,
-                            block.id,
-                            item.raw_citation_key,
-                            item.summary,
-                        )
-                        continue
                     logger.info(
                         "Generated summary paper_id=%s block_id=%s key=%s section=%r summary=%r",
                         paper_id,

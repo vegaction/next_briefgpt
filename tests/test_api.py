@@ -33,11 +33,17 @@ class FakeExtractionClient(BaseExtractionClient):
 class ApiTests(TestCase):
     def setUp(self) -> None:
         reset_database()
+        self.original_openrouter_api_key = settings.openrouter_api_key
+        self.original_gemini_api_key = settings.gemini_api_key
+        settings.openrouter_api_key = None
+        settings.gemini_api_key = None
         self.client = TestClient(app)
         self.session = get_session()
         self.tempdir = TemporaryDirectory()
 
     def tearDown(self) -> None:
+        settings.openrouter_api_key = self.original_openrouter_api_key
+        settings.gemini_api_key = self.original_gemini_api_key
         self.session.close()
         self.tempdir.cleanup()
 
@@ -81,7 +87,9 @@ class ApiTests(TestCase):
         self.assertEqual("v1", first_search["paper_version"])
 
     def test_extract_endpoint_returns_503_without_llm_configuration(self) -> None:
-        original_api_key = settings.gemini_api_key
+        original_openrouter_api_key = settings.openrouter_api_key
+        original_gemini_api_key = settings.gemini_api_key
+        settings.openrouter_api_key = None
         settings.gemini_api_key = None
         try:
             paper = Paper(arxiv_id="2603.15726", version="v1", title="Sample", abstract="A", ingest_status="parsed")
@@ -91,6 +99,7 @@ class ApiTests(TestCase):
             response = self.client.post(f"/extract/{paper.id}")
 
             self.assertEqual(503, response.status_code)
-            self.assertIn("GEMINI_API_KEY", response.json()["detail"])
+            self.assertIn("provider", response.json()["detail"])
         finally:
-            settings.gemini_api_key = original_api_key
+            settings.openrouter_api_key = original_openrouter_api_key
+            settings.gemini_api_key = original_gemini_api_key

@@ -7,9 +7,10 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
+from briefgpt_arxiv.config import settings
 from briefgpt_arxiv.models import Artifact, CitationBlock, IngestionJob, Paper, PaperReference
 from briefgpt_arxiv.services.parser import (
-    GeminiParserRepairClient,
+    LLMParserRepairClient,
     ParseRepairResult,
     ParserRepairClient,
     ParserService,
@@ -32,6 +33,10 @@ class FakeRepairClient(ParserRepairClient):
 class ParserServiceTests(TestCase):
     def setUp(self) -> None:
         reset_database()
+        self.original_openrouter_api_key = settings.openrouter_api_key
+        self.original_gemini_api_key = settings.gemini_api_key
+        settings.openrouter_api_key = None
+        settings.gemini_api_key = None
         self.session = get_session()
         self.paper = Paper(arxiv_id="2603.15726", version="v1", title="Sample", abstract="A")
         self.session.add(self.paper)
@@ -41,6 +46,8 @@ class ParserServiceTests(TestCase):
         self.tempdir = TemporaryDirectory()
 
     def tearDown(self) -> None:
+        settings.openrouter_api_key = self.original_openrouter_api_key
+        settings.gemini_api_key = self.original_gemini_api_key
         self.session.close()
         self.tempdir.cleanup()
 
@@ -98,6 +105,16 @@ class ParserServiceTests(TestCase):
         self.assertEqual(["completed", "skipped"], [job.status for job in jobs])
         self.assertEqual([1, 2], [job.attempt_count for job in jobs])
 
+    def test_parse_structured_doc_requires_explicit_latex_parse_object(self) -> None:
+        structured_path = Path(self.tempdir.name) / "structured.json"
+        structured_path.write_text('{"body_text": [], "bib_entries": {}}')
+        artifact = Artifact(paper_id=self.paper.id, artifact_type="structured_parse", uri=str(structured_path))
+        self.session.add(artifact)
+        self.session.commit()
+
+        with self.assertRaisesRegex(ValueError, "latex_parse"):
+            ParserService(self.session).parse_paper(self.paper.id)
+
     def test_parse_source_uses_repair_client_for_nonstandard_macros(self) -> None:
         source_path = Path(self.tempdir.name) / "source.tex"
         source_path.write_text((FIXTURES / "latex_sample.tex").read_text())
@@ -153,17 +170,18 @@ We compare against prior work \cite{alpha2024}.
         self.assertEqual(1, repair_client.repair.call_count)
         self.assertIn(r"\cite{alpha2024}", repair_client.repair.call_args.args[0])
 
-    def test_gemini_repair_client_derives_used_repair_without_model_flag(self) -> None:
-        client = GeminiParserRepairClient()
+    def test_llm_repair_client_derives_used_repair_without_model_flag(self) -> None:
+        settings.openrouter_api_key = "test-key"
+        client = LLMParserRepairClient()
 
-        class StubGeminiClient:
+        class StubLLMClient:
             def generate_json(self, **_kwargs) -> dict:
                 return {
                     "raw_citation_keys": ["BIBREF0", "BIBREF2"],
                     "cleaned_text": "Text with BIBREF2",
                 }
 
-        client.client = StubGeminiClient()
+        client.client = StubLLMClient()
         repaired = client.repair("Text with \\mycite{BIBREF2}", ["BIBREF0"])
 
         self.assertEqual(["BIBREF0", "BIBREF2"], repaired.raw_citation_keys)

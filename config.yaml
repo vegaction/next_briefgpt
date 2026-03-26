@@ -1,0 +1,7 @@
+llm:
+  parser:
+    provider: "openai_compatible"
+    model_name: "nvidia/nemotron-3-super-120b-a12b:free"
+  extractor:
+    provider: "openai_compatible"
+    model_name: "nvidia/nemotron-3-super-120b-a12b:free"

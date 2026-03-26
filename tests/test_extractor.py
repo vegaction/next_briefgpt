@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from unittest import TestCase
+from unittest.mock import Mock
 
 from briefgpt_arxiv.config import settings
 from briefgpt_arxiv.models import (
@@ -15,6 +16,7 @@ from briefgpt_arxiv.services.extractor import (
     CitationCandidate,
     ExtractedCitation,
     ExtractionConfigurationError,
+    LLMExtractionClient,
     ExtractorService,
     build_citation_candidates,
     normalize_extracted_summary,
@@ -63,13 +65,11 @@ class ExtractorServiceTests(TestCase):
                 PaperReference(
                     paper_id=paper.id,
                     local_ref_id="BIBREF0",
-                    raw_text="ReAct raw text",
                     title="ReAct",
                 ),
                 PaperReference(
                     paper_id=paper.id,
                     local_ref_id="BIBREF1",
-                    raw_text="TravelPlanner raw text",
                     title="TravelPlanner",
                 ),
             ]
@@ -107,13 +107,16 @@ class ExtractorServiceTests(TestCase):
         self.assertIsNotNone(job.finished_at)
 
     def test_requires_llm_client_when_no_explicit_client_is_provided(self) -> None:
-        original_api_key = settings.gemini_api_key
+        original_openrouter_api_key = settings.openrouter_api_key
+        original_gemini_api_key = settings.gemini_api_key
+        settings.openrouter_api_key = None
         settings.gemini_api_key = None
         try:
             with self.assertRaises(ExtractionConfigurationError):
                 ExtractorService(self.session)
         finally:
-            settings.gemini_api_key = original_api_key
+            settings.openrouter_api_key = original_openrouter_api_key
+            settings.gemini_api_key = original_gemini_api_key
 
     def test_extract_skip_reuses_existing_outputs_and_records_skipped_job(self) -> None:
         service = ExtractorService(self.session, client=FakeExtractionClient())
@@ -187,3 +190,56 @@ class ExtractorServiceTests(TestCase):
         )
 
         self.assertEqual(summary, normalized)
+
+    def test_llm_extraction_client_omits_reference_raw_text_from_prompt(self) -> None:
+        client = LLMExtractionClient()
+        client.client = Mock()
+        client.client.generate_json.return_value = {
+            "items": [
+                {
+                    "mention_order": 0,
+                    "intent_label": "benchmark",
+                    "summary": "ReAct is a planning benchmark.",
+                }
+            ]
+        }
+
+        client.annotate_candidates(
+            candidates=[
+                CitationCandidate(
+                    raw_citation_key="BIBREF0",
+                    citation_mention="ReAct",
+                    sentence_text="ReAct BIBREF0 is discussed here.",
+                    section_title="Introduction",
+                    mention_order=0,
+                )
+            ],
+            raw_text="ReAct BIBREF0 is discussed here.",
+            section_title="Introduction",
+            references={
+                "BIBREF0": {
+                    "title": "ReAct",
+                    "year": 2023,
+                    "raw_text": "This should not be sent",
+                }
+            },
+        )
+
+        kwargs = client.client.generate_json.call_args.kwargs
+        self.assertIn('"title": "ReAct"', kwargs["user_text"])
+        self.assertIn('"year": 2023', kwargs["user_text"])
+        self.assertNotIn("This should not be sent", kwargs["user_text"])
+
+    def test_llm_extraction_client_skips_llm_call_when_candidates_are_empty(self) -> None:
+        client = LLMExtractionClient()
+        client.client = Mock()
+
+        extracted = client.annotate_candidates(
+            candidates=[],
+            raw_text="",
+            section_title="Introduction",
+            references={},
+        )
+
+        self.assertEqual([], extracted)
+        client.client.generate_json.assert_not_called()
