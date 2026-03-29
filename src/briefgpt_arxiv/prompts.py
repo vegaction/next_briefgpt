@@ -5,63 +5,11 @@ import json
 from jinja2 import Environment, StrictUndefined
 
 PARSER_REPAIR_PROMPT_VERSION = "gemini-parser-repair-v1"
-EXTRACTOR_PROMPT_VERSION = "gemini-citation-extractor-v7"
+EXTRACTOR_PROMPT_VERSION = "citation-extractor-v8"
 
 
 PROMPT_TEMPLATE_ENV = Environment(undefined=StrictUndefined, autoescape=False)
 PROMPT_TEMPLATE_ENV.filters["tojson"] = lambda value: json.dumps(value, ensure_ascii=False)
-
-
-EXTRACTION_JSON_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "items": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "mention_order": {"type": "integer"},
-                    "intent_label": {
-                        "type": "string",
-                        "enum": [
-                            "background",
-                            "support",
-                            "method_use",
-                            "comparison",
-                            "critique",
-                            "dataset",
-                            "metric",
-                            "definition",
-                            "benchmark",
-                            "other",
-                        ],
-                    },
-                    "summary": {"type": "string"},
-                },
-                "required": [
-                    "mention_order",
-                    "intent_label",
-                    "summary",
-                ],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "required": ["items"],
-    "additionalProperties": False,
-}
-
-
-PARSER_REPAIR_JSON_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "raw_citation_keys": {"type": "array", "items": {"type": "string"}},
-        "cleaned_text": {"type": "string"},
-        "used_repair": {"type": "boolean"},
-    },
-    "required": ["raw_citation_keys", "cleaned_text"],
-    "additionalProperties": False,
-}
 
 
 PARSER_REPAIR_SYSTEM_TEMPLATE = """
@@ -77,6 +25,16 @@ Repair this citation-bearing academic text block for downstream parsing.
 - Keep the original meaning unchanged.
 - Do not invent citation keys.
 - Return `raw_citation_keys` using the citation labels visible or inferable from the text.
+
+## Output Format
+Return only one JSON object.
+Do not wrap the JSON in markdown fences.
+Do not return any explanatory text before or after the JSON object.
+Do not return any extra keys beyond the requested fields.
+The JSON object must contain:
+- `raw_citation_keys`: array of strings containing the recovered citation keys for this text block.
+- `cleaned_text`: string containing the cleaned text for downstream parsing.
+- Optional `used_repair`: boolean indicating whether the text or citation keys were changed during repair.
 
 {% if candidate_keys %}
 ## Candidate Keys
@@ -113,6 +71,15 @@ Annotate pre-extracted citation mentions with citation semantics.
 - When this paper discusses the cited work in a nuanced way, preserve the evaluative signal instead of flattening it into a neutral description.
 - Pay special attention to comparisons, tradeoffs, limitations, failure cases, scope boundaries, or reasons the cited work is preferred or not preferred in this paper.
 - Prefer crisp, information-dense summaries that will help a downstream deep research agent retrieve the right cited paper later.
+
+## Output Format
+Return only one JSON object.
+Do not wrap the JSON in markdown fences.
+Do not return any explanatory text before or after the JSON object.
+Do not return any extra keys beyond the requested fields.
+The JSON object must contain:
+- `items`: array with exactly one object per candidate mention.
+- Each object in `items` must contain `mention_order` (integer), `intent_label` (one of `background`, `support`, `method_use`, `comparison`, `critique`, `dataset`, `metric`, `definition`, `benchmark`, `other`), and `summary` (string).
 
 ## Section Title
 {{ section_title | tojson }}

@@ -229,6 +229,107 @@ class ExtractorServiceTests(TestCase):
         self.assertIn('"title": "ReAct"', kwargs["user_text"])
         self.assertIn('"year": 2023', kwargs["user_text"])
         self.assertNotIn("This should not be sent", kwargs["user_text"])
+        self.assertIn("## Output Format", kwargs["user_text"])
+        self.assertIn("Do not return any extra keys beyond the requested fields.", kwargs["user_text"])
+        self.assertIn("The JSON object must contain:", kwargs["user_text"])
+        self.assertIn("`items`", kwargs["user_text"])
+        self.assertIn("`mention_order`", kwargs["user_text"])
+        self.assertIn("`intent_label`", kwargs["user_text"])
+        self.assertIn("`summary`", kwargs["user_text"])
+        self.assertNotIn("The JSON must match this schema exactly", kwargs["user_text"])
+
+    def test_llm_extraction_client_rejects_non_items_payload_shape(self) -> None:
+        client = LLMExtractionClient()
+        client.client = Mock()
+        client.client.generate_json.return_value = {
+            "mention_order": 0,
+            "intent_label": "method_use",
+            "summary": "DPO directly optimizes from preferences without a separate reward model.",
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "unexpected top-level keys"):
+            client.annotate_candidates(
+                candidates=[
+                    CitationCandidate(
+                        raw_citation_key="BIBREF0",
+                        citation_mention="DPO",
+                        sentence_text="DPO BIBREF0 is used here.",
+                        section_title="Methods",
+                        mention_order=0,
+                    )
+                ],
+                raw_text="DPO BIBREF0 is used here.",
+                section_title="Methods",
+                references={"BIBREF0": {"title": "DPO", "year": 2023}},
+            )
+
+    def test_llm_extraction_client_rejects_schema_wrapped_items_list(self) -> None:
+        client = LLMExtractionClient()
+        client.client = Mock()
+        client.client.generate_json.return_value = {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": [
+                        {
+                            "mention_order": 0,
+                            "intent_label": "method_use",
+                            "summary": "DPO directly optimizes from preferences without a separate reward model.",
+                        }
+                    ],
+                }
+            },
+            "required": ["items"],
+            "additionalProperties": False,
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "unexpected top-level keys"):
+            client.annotate_candidates(
+                candidates=[
+                    CitationCandidate(
+                        raw_citation_key="BIBREF0",
+                        citation_mention="DPO",
+                        sentence_text="DPO BIBREF0 is used here.",
+                        section_title="Methods",
+                        mention_order=0,
+                    )
+                ],
+                raw_text="DPO BIBREF0 is used here.",
+                section_title="Methods",
+                references={"BIBREF0": {"title": "DPO", "year": 2023}},
+            )
+
+    def test_llm_extraction_client_accepts_items_list_payload(self) -> None:
+        client = LLMExtractionClient()
+        client.client = Mock()
+        client.client.generate_json.return_value = {
+            "items": [
+                {
+                    "mention_order": 0,
+                    "intent_label": "support",
+                    "summary": "GPT-5.4 is cited as evidence of recent LLM progress.",
+                }
+            ]
+        }
+
+        extracted = client.annotate_candidates(
+            candidates=[
+                CitationCandidate(
+                    raw_citation_key="BIBREF0",
+                    citation_mention="GPT-5.4",
+                    sentence_text="GPT-5.4 BIBREF0 is discussed here.",
+                    section_title="Intro",
+                    mention_order=0,
+                )
+            ],
+            raw_text="GPT-5.4 BIBREF0 is discussed here.",
+            section_title="Intro",
+            references={"BIBREF0": {"title": "GPT-5.4", "year": 2026}},
+        )
+
+        self.assertEqual(1, len(extracted))
+        self.assertEqual("support", extracted[0].intent_label)
 
     def test_llm_extraction_client_skips_llm_call_when_candidates_are_empty(self) -> None:
         client = LLMExtractionClient()

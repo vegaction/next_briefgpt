@@ -27,6 +27,18 @@ def parse_bool_env(value: str | None, default: bool) -> bool:
     return default
 
 
+def parse_float_env(value: str | None, default: float) -> float:
+    if value is None:
+        return default
+    normalized = value.strip()
+    if not normalized:
+        return default
+    try:
+        return float(normalized)
+    except ValueError:
+        return default
+
+
 def load_dotenv(dotenv_path: str = ".env") -> None:
     path = Path(dotenv_path)
     if not path.exists():
@@ -75,6 +87,7 @@ llm_yaml_config = get_yaml_mapping(yaml_config, "llm")
 class LLMEndpointSettings:
     provider: str
     model_name: str
+    reasoning_enabled: bool | None = None
 
 
 def default_llm_provider() -> str:
@@ -95,7 +108,15 @@ def build_llm_endpoint_settings(endpoint_name: str) -> LLMEndpointSettings:
     endpoint_config = get_endpoint_config(llm_yaml_config, endpoint_name)
     provider = str(endpoint_config.get("provider") or default_llm_provider())
     model_name = str(endpoint_config.get("model_name") or default_model_name_for_provider(provider))
-    return LLMEndpointSettings(provider=provider, model_name=model_name)
+    reasoning_enabled_value = endpoint_config.get("reasoning_enabled")
+    reasoning_enabled = None
+    if reasoning_enabled_value is not None:
+        reasoning_enabled = bool(reasoning_enabled_value)
+    return LLMEndpointSettings(
+        provider=provider,
+        model_name=model_name,
+        reasoning_enabled=reasoning_enabled,
+    )
 
 
 @dataclass(slots=True)
@@ -105,7 +126,10 @@ class Settings:
     openrouter_api_key: str | None = normalize_env_value(os.getenv("OPEN_ROUTER_API_KEY"))
     gemini_api_key: str | None = normalize_env_value(os.getenv("GEMINI_API_KEY"))
     openrouter_base_url: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    openrouter_site_url: str | None = normalize_env_value(os.getenv("OPENROUTER_SITE_URL"))
+    openrouter_site_name: str | None = normalize_env_value(os.getenv("OPENROUTER_SITE_NAME"))
     openrouter_reasoning_enabled: bool = parse_bool_env(os.getenv("OPENROUTER_REASONING_ENABLED"), True)
+    openrouter_timeout_seconds: float = parse_float_env(os.getenv("OPENROUTER_TIMEOUT_SECONDS"), 60.0)
     summary_debug_log_path: Path = Path(os.getenv("SUMMARY_DEBUG_LOG_PATH", "./logs/summary_debug.jsonl"))
     parser_llm: LLMEndpointSettings = field(default_factory=lambda: build_llm_endpoint_settings("parser"))
     extractor_llm: LLMEndpointSettings = field(default_factory=lambda: build_llm_endpoint_settings("extractor"))

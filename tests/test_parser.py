@@ -87,6 +87,19 @@ class ParserServiceTests(TestCase):
         self.assertFalse(result.cleanup_performed)
         self.assertEqual("parsed", result.status)
 
+    def test_parse_structured_doc_skips_repair_client(self) -> None:
+        structured_path = Path(self.tempdir.name) / "structured.json"
+        structured_path.write_text((FIXTURES / "doc2json_sample.json").read_text())
+        artifact = Artifact(paper_id=self.paper.id, artifact_type="structured_parse", uri=str(structured_path))
+        self.session.add(artifact)
+        self.session.commit()
+
+        repair_client = Mock(spec=ParserRepairClient)
+        service = ParserService(self.session, repair_client=repair_client)
+        service.parse_paper(self.paper.id)
+
+        repair_client.repair.assert_not_called()
+
     def test_parse_skip_reuses_existing_outputs_and_records_skipped_job(self) -> None:
         structured_path = Path(self.tempdir.name) / "structured.json"
         structured_path.write_text((FIXTURES / "doc2json_sample.json").read_text())
@@ -134,7 +147,7 @@ class ParserServiceTests(TestCase):
         )
         self.assertIn("BIBREF2", repaired_block.raw_citation_keys)
 
-    def test_parse_source_skips_repair_for_paragraphs_without_citation_signal(self) -> None:
+    def test_parse_source_skips_repair_for_standard_cite_macros(self) -> None:
         source_path = Path(self.tempdir.name) / "source.tex"
         source_path.write_text(
             r"""
@@ -167,8 +180,35 @@ We compare against prior work \cite{alpha2024}.
 
         self.assertEqual(1, refs)
         self.assertEqual(1, blocks)
-        self.assertEqual(1, repair_client.repair.call_count)
-        self.assertIn(r"\cite{alpha2024}", repair_client.repair.call_args.args[0])
+        self.assertEqual(0, repair_client.repair.call_count)
+
+    def test_parse_source_ignores_commented_citations(self) -> None:
+        source_path = Path(self.tempdir.name) / "source.tex"
+        source_path.write_text(
+            r"""
+\documentclass{article}
+\begin{document}
+\section{Intro}
+% Legacy note \citep{old2025key}.
+We compare against MiroFlow \citep{miromind2025miroflow}.
+
+\begin{thebibliography}{9}
+\bibitem{miromind2025miroflow} MiroFlow. 2025.
+\end{thebibliography}
+\end{document}
+"""
+        )
+        artifact = Artifact(paper_id=self.paper.id, artifact_type="source", uri=str(source_path))
+        self.session.add(artifact)
+        self.session.commit()
+
+        service = ParserService(self.session)
+        _, refs, blocks = service.parse_paper(self.paper.id).as_tuple()
+
+        self.assertEqual(1, refs)
+        self.assertEqual(1, blocks)
+        block = self.session.query(CitationBlock).filter(CitationBlock.has_citations.is_(True)).one()
+        self.assertEqual(["miromind2025miroflow"], block.raw_citation_keys)
 
     def test_llm_repair_client_derives_used_repair_without_model_flag(self) -> None:
         settings.openrouter_api_key = "test-key"
@@ -187,6 +227,38 @@ We compare against prior work \cite{alpha2024}.
         self.assertEqual(["BIBREF0", "BIBREF2"], repaired.raw_citation_keys)
         self.assertEqual("Text with BIBREF2", repaired.cleaned_text)
         self.assertTrue(repaired.used_repair)
+
+    def test_llm_repair_client_prompt_omits_schema_text(self) -> None:
+        settings.openrouter_api_key = "test-key"
+        client = LLMParserRepairClient()
+        client.client = Mock()
+        client.client.generate_json.return_value = {
+            "raw_citation_keys": ["BIBREF0"],
+            "cleaned_text": "Text with BIBREF0",
+        }
+
+        client.repair("Text with BIBREF0", ["BIBREF0"])
+
+        kwargs = client.client.generate_json.call_args.kwargs
+        self.assertIn("## Output Format", kwargs["user_text"])
+        self.assertIn("Do not return any explanatory text before or after the JSON object.", kwargs["user_text"])
+        self.assertIn("The JSON object must contain:", kwargs["user_text"])
+        self.assertIn("`raw_citation_keys`", kwargs["user_text"])
+        self.assertIn("`cleaned_text`", kwargs["user_text"])
+        self.assertIn("`used_repair`", kwargs["user_text"])
+        self.assertNotIn("The JSON must match this schema exactly", kwargs["user_text"])
+
+    def test_llm_repair_client_propagates_exception(self) -> None:
+        settings.openrouter_api_key = "test-key"
+        client = LLMParserRepairClient()
+
+        class FailingLLMClient:
+            def generate_json(self, **_kwargs) -> dict:
+                raise TimeoutError("stuck response")
+
+        client.client = FailingLLMClient()
+        with self.assertRaises(TimeoutError):
+            client.repair("Text with \\mycite{BIBREF2}", ["BIBREF0"])
 
     def test_parse_source_tar_extracts_references_from_external_bib(self) -> None:
         source_path = Path(self.tempdir.name) / "source.tar"

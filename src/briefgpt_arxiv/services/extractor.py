@@ -18,7 +18,6 @@ from briefgpt_arxiv.models import (
     PaperReference,
 )
 from briefgpt_arxiv.prompts import (
-    EXTRACTION_JSON_SCHEMA,
     EXTRACTOR_PROMPT_VERSION,
     EXTRACTION_SYSTEM_TEMPLATE,
     EXTRACTION_USER_TEMPLATE,
@@ -113,16 +112,17 @@ class LLMExtractionClient(BaseExtractionClient):
                 "prompt_version": EXTRACTOR_PROMPT_VERSION,
                 "system_instruction": system_instruction,
                 "user_text": user_text,
-                "response_json_schema": EXTRACTION_JSON_SCHEMA,
                 "prompt_candidates": prompt_candidates,
             },
         )
+        payload: dict | None = None
         try:
             payload = self.client.generate_json(
                 system_instruction=system_instruction,
                 user_text=user_text,
-                response_json_schema=EXTRACTION_JSON_SCHEMA,
             )
+            annotations = self._parse_annotations(payload)
+            self._validate_annotations(candidates, annotations)
         except Exception as exc:
             self._append_summary_debug_log(
                 event="summary_error",
@@ -132,6 +132,7 @@ class LLMExtractionClient(BaseExtractionClient):
                     "prompt_version": EXTRACTOR_PROMPT_VERSION,
                     "error_type": type(exc).__name__,
                     "error_message": str(exc),
+                    "response_payload": payload,
                 },
             )
             raise
@@ -141,12 +142,10 @@ class LLMExtractionClient(BaseExtractionClient):
             payload={
                 "model_name": self.model_name,
                 "prompt_version": EXTRACTOR_PROMPT_VERSION,
-                "response_items": payload["items"],
+                "response_items": [asdict(item) for item in annotations],
                 "response_payload": payload,
             },
         )
-        annotations = [CitationAnnotation(**item) for item in payload["items"]]
-        self._validate_annotations(candidates, annotations)
         annotations_by_order = {item.mention_order: item for item in annotations}
         return [
             ExtractedCitation(
@@ -160,6 +159,17 @@ class LLMExtractionClient(BaseExtractionClient):
             )
             for candidate in candidates
         ]
+
+    @staticmethod
+    def _parse_annotations(payload: dict) -> list[CitationAnnotation]:
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Extractor returned a non-object JSON payload: {payload!r}")
+        if set(payload.keys()) != {"items"}:
+            raise RuntimeError(f"Extractor returned unexpected top-level keys: {sorted(payload.keys())!r}")
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise RuntimeError(f"Extractor returned a non-list `items` payload: {payload!r}")
+        return [CitationAnnotation(**item) for item in items]
 
     @staticmethod
     def _validate_annotations(

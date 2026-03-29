@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import signal
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +20,6 @@ from briefgpt_arxiv.models import (
     PaperReference,
 )
 from briefgpt_arxiv.prompts import (
-    PARSER_REPAIR_JSON_SCHEMA,
     PARSER_REPAIR_SYSTEM_TEMPLATE,
     PARSER_REPAIR_USER_TEMPLATE,
     PROMPT_TEMPLATE_ENV,
@@ -27,7 +27,6 @@ from briefgpt_arxiv.prompts import (
 from briefgpt_arxiv.services.contracts import ParseInputSelection, ParseRunResult
 from briefgpt_arxiv.services.jobs import JobTracker
 from briefgpt_arxiv.utils import normalize_whitespace, utcnow_naive
-
 
 @dataclass(slots=True)
 class ReferencePayload:
@@ -77,6 +76,7 @@ class ParserRepairClient:
 class LLMParserRepairClient(ParserRepairClient):
     def __init__(self, client: BaseLLMClient | None = None) -> None:
         self.client = client or create_llm_client(settings.parser_llm)
+        self.timeout_seconds = settings.openrouter_timeout_seconds
 
     def repair(self, raw_text: str, candidate_keys: list[str]) -> ParseRepairResult:
         system_instruction = PROMPT_TEMPLATE_ENV.from_string(PARSER_REPAIR_SYSTEM_TEMPLATE).render()
@@ -84,10 +84,9 @@ class LLMParserRepairClient(ParserRepairClient):
             raw_text=raw_text,
             candidate_keys=candidate_keys,
         )
-        payload = self.client.generate_json(
+        payload = self._generate_json_with_timeout(
             system_instruction=system_instruction,
             user_text=user_text,
-            response_json_schema=PARSER_REPAIR_JSON_SCHEMA,
         )
         raw_citation_keys = payload["raw_citation_keys"]
         cleaned_text = payload["cleaned_text"]
@@ -100,6 +99,28 @@ class LLMParserRepairClient(ParserRepairClient):
             cleaned_text=cleaned_text,
             used_repair=used_repair,
         )
+
+    def _generate_json_with_timeout(self, *, system_instruction: str, user_text: str) -> dict:
+        if not hasattr(signal, "setitimer") or self.timeout_seconds <= 0:
+            return self.client.generate_json(
+                system_instruction=system_instruction,
+                user_text=user_text,
+            )
+
+        def _raise_timeout(_signum, _frame) -> None:
+            raise TimeoutError(f"parser repair request exceeded {self.timeout_seconds:.1f}s")
+
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, _raise_timeout)
+        signal.setitimer(signal.ITIMER_REAL, self.timeout_seconds)
+        try:
+            return self.client.generate_json(
+                system_instruction=system_instruction,
+                user_text=user_text,
+            )
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
 
 
 class ParserService:
@@ -173,18 +194,10 @@ class ParserService:
 
     def _select_parse_input(self, paper: Paper) -> ParseInputSelection:
         artifacts = {artifact.artifact_type: artifact for artifact in paper.artifacts}
-        if "structured_parse" in artifacts:
-            artifact = artifacts["structured_parse"]
-            return ParseInputSelection(artifact_type="structured_parse", artifact_uri=artifact.uri)
-        if "source" in artifacts:
-            artifact = artifacts["source"]
-            return ParseInputSelection(artifact_type="source", artifact_uri=artifact.uri)
-        if "pdf_text" in artifacts:
-            artifact = artifacts["pdf_text"]
-            return ParseInputSelection(artifact_type="pdf_text", artifact_uri=artifact.uri)
-        if "pdf" in artifacts:
-            artifact = artifacts["pdf"]
-            return ParseInputSelection(artifact_type="pdf", artifact_uri=artifact.uri)
+        for artifact_type in ("structured_parse", "source", "pdf_text", "pdf"):
+            artifact = artifacts.get(artifact_type)
+            if artifact is not None:
+                return ParseInputSelection(artifact_type=artifact_type, artifact_uri=artifact.uri)
         raise ValueError("No parseable artifact found.")
 
     def _parse_selection(self, paper: Paper, selection: ParseInputSelection) -> ParsedDocument:
@@ -236,26 +249,25 @@ class ParserService:
                 if ref_id:
                     raw_keys.append(ref_id)
             raw_keys = list(dict.fromkeys(raw_keys))
-            repaired = self.repair_client.repair(raw_text, raw_keys)
             sections.append(
                 SectionPayload(
                     section_title=item.get("section"),
                     section_path=item.get("section"),
                     chunk_index=index,
-                    raw_text=normalize_whitespace(repaired.cleaned_text),
-                    raw_citation_keys=repaired.raw_citation_keys,
-                    repair_used=repaired.used_repair,
+                    raw_text=raw_text,
+                    raw_citation_keys=raw_keys,
+                    repair_used=False,
                 )
             )
         return ParsedDocument(references=references, sections=sections)
 
     def _parse_source(self, path: Path) -> ParsedDocument:
         if path.suffix == ".tex":
-            source_text = path.read_text()
+            source_text = self._strip_latex_comments(path.read_text())
             references = self._extract_references_from_source(source_text)
         else:
             bundle = self._read_source_bundle_from_tar(path)
-            source_text = bundle.tex_text
+            source_text = self._strip_latex_comments(bundle.tex_text)
             references = self._extract_references_from_source(
                 source_text,
                 bib_texts=bundle.bib_texts,
@@ -430,11 +442,9 @@ class ParserService:
                 continue
             paragraphs = [part.strip() for part in re.split(r"\n\s*\n", fragment) if part.strip()]
             for paragraph in paragraphs:
-                keys = self._extract_citation_keys(paragraph)
-                has_citation_signal = bool(keys) or "cite" in paragraph.lower()
-                if not has_citation_signal:
+                repaired = self._repair_source_paragraph(paragraph)
+                if repaired is None:
                     continue
-                repaired = self.repair_client.repair(paragraph, keys)
                 if not repaired.raw_citation_keys:
                     continue
                 cleaned = self._clean_latex_text(repaired.cleaned_text)
@@ -450,6 +460,27 @@ class ParserService:
                 )
                 chunk_index += 1
         return sections
+
+    def _repair_source_paragraph(self, paragraph: str) -> ParseRepairResult | None:
+        candidate_keys = self._extract_citation_keys(paragraph)
+        if not candidate_keys and not self._has_source_citation_macro(paragraph):
+            return None
+        if self._should_repair_source_paragraph(paragraph, candidate_keys):
+            return self.repair_client.repair(paragraph, candidate_keys)
+        return ParseRepairResult(
+            raw_citation_keys=candidate_keys,
+            cleaned_text=paragraph,
+            used_repair=False,
+        )
+
+    def _should_repair_source_paragraph(self, paragraph: str, candidate_keys: list[str]) -> bool:
+        if not candidate_keys:
+            return self._has_source_citation_macro(paragraph)
+        return bool(re.search(r"\\(?!cite[a-zA-Z*]*\{)[a-zA-Z*]*cite[a-zA-Z*]*\{", paragraph))
+
+    @staticmethod
+    def _has_source_citation_macro(paragraph: str) -> bool:
+        return bool(re.search(r"\\[a-zA-Z*]*cite[a-zA-Z*]*\{", paragraph))
 
     def _extract_references_from_source(
         self,
@@ -592,6 +623,10 @@ class ParserService:
             return None
         cleaned = normalize_whitespace(self._clean_latex_text(value))
         return cleaned or None
+
+    @staticmethod
+    def _strip_latex_comments(text: str) -> str:
+        return "\n".join(re.sub(r"(?<!\\)%.*$", "", line) for line in text.splitlines())
 
     @staticmethod
     def _parse_bibtex_authors(author_text: str | None) -> list[dict] | None:

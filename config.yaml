@@ -1,7 +1,9 @@
 llm:
   parser:
     provider: "openai_compatible"
-    model_name: "nvidia/nemotron-3-super-120b-a12b:free"
+    model_name: "deepseek/deepseek-v3.2"
+    reasoning_enabled: false
   extractor:
     provider: "openai_compatible"
-    model_name: "nvidia/nemotron-3-super-120b-a12b:free"
+    model_name: "deepseek/deepseek-v3.2"
+    reasoning_enabled: false

@@ -2,19 +2,21 @@
 
 ## Purpose
 
-This repository implements a paper-centric citation knowledge base for arXiv papers.
+This repository implements the knowledge-base layer for a future scientific deep research agent.
 
-The system is responsible for:
+Today it focuses on one concrete job:
 
-- ingesting paper metadata and raw artifacts
-- parsing source or PDF artifacts into structured references and citation-bearing text blocks
-- extracting citation-level semantics with an LLM
-- storing all intermediate and final outputs in a relational database
-- exposing thin API and CLI entrypoints for running and inspecting the pipeline
+- ingest an arXiv paper
+- persist its raw artifacts
+- parse references and citation-bearing text blocks
+- extract citation-level semantics with an LLM
+- expose the resulting state through a database, scripts, and a thin API
 
-The architecture is organized around a staged pipeline with explicit persisted state at each useful boundary.
+The architecture is intentionally paper-centric, database-backed, and rerunnable.
 
-## End-To-End Flow
+## System Overview
+
+The core pipeline is:
 
 ```mermaid
 flowchart LR
@@ -24,139 +26,119 @@ flowchart LR
     D --> E["ParserService"]
     E --> F["paper_references"]
     E --> G["citation_blocks"]
-    G --> H["ExtractorService"]
-    F --> H
+    F --> H["ExtractorService"]
+    G --> H
     H --> I["citation_mentions"]
-    C --> J["FastAPI routes"]
+    C --> J["FastAPI"]
     F --> J
     I --> J
-    C --> K["inspect_db.py"]
+    C --> K["scripts/inspect_db.py"]
     F --> K
     G --> K
     I --> K
 ```
 
-The main workflow is:
+The pipeline is staged on purpose.
 
-1. A paper is identified by arXiv id.
-2. The crawler fetches metadata from the arXiv Atom API and downloads raw artifacts.
-3. The parser selects the best available artifact and produces references plus citation-bearing blocks.
-4. The extractor annotates those blocks against the local reference map and writes mention-level semantics.
-5. The API and scripts read from the database and artifact store rather than reconstructing state in memory.
+Each stage writes durable state before the next stage begins:
+
+- crawl writes `papers` and `artifacts`
+- parse writes `paper_references` and `citation_blocks`
+- extract writes `citation_mentions`
+
+This makes the system easier to inspect, rerun, and debug than an in-memory end-to-end flow.
+
+## Repository Structure
+
+Key paths:
+
+- `src/briefgpt_arxiv/main.py`: FastAPI entrypoint
+- `src/briefgpt_arxiv/config.py`: environment and YAML-backed settings
+- `src/briefgpt_arxiv/db.py`: SQLAlchemy engine, session factory, and table initialization
+- `src/briefgpt_arxiv/models.py`: ORM schema
+- `src/briefgpt_arxiv/schemas.py`: API response models
+- `src/briefgpt_arxiv/llm_client.py`: Gemini and OpenAI-compatible client implementations
+- `src/briefgpt_arxiv/prompts.py`: prompt templates
+- `src/briefgpt_arxiv/services/crawler.py`: arXiv metadata and artifact ingestion
+- `src/briefgpt_arxiv/services/parser.py`: source / structured parse / PDF parsing
+- `src/briefgpt_arxiv/services/extractor.py`: citation candidate generation and LLM-backed extraction
+- `src/briefgpt_arxiv/services/orchestrator.py`: full pipeline composition
+- `src/briefgpt_arxiv/services/jobs.py`: pipeline job tracking
+- `src/briefgpt_arxiv/services/contracts.py`: structured stage result objects
+- `scripts/run_pipeline.py`: pipeline runner
+- `scripts/inspect_db.py`: database inspection utility
 
 ## Runtime Layers
 
-The runtime breaks into five layers.
+### API layer
 
-### 1. API layer
+`main.py` is intentionally thin.
 
-`src/briefgpt_arxiv/main.py`
+It:
 
-- constructs the FastAPI app
-- initializes the database at import time with `init_db()`
-- provides workflow endpoints for crawl, parse, and extract
-- provides read endpoints for paper views, reference views, and citation search
-- keeps route handlers thin and delegates core behavior to services
+- creates the FastAPI app
+- initializes tables with `init_db()`
+- exposes workflow endpoints for crawl, parse, and extract
+- exposes read endpoints for papers, references, and citation search
+- delegates real work to services
 
-### 2. Service layer
+The API should not contain parsing or extraction logic.
 
-`src/briefgpt_arxiv/services/`
+### Service layer
 
-- `crawler.py` handles arXiv lookup and artifact persistence
-- `parser.py` handles artifact selection and document parsing
-- `extractor.py` handles citation candidate generation and LLM-backed annotation
-- `orchestrator.py` composes crawl, parse, and extract into a pipeline runner
-- `jobs.py` records stage execution history
-- `contracts.py` defines structured result objects used by scripts and orchestration
+`services/` contains the business logic.
 
-This is the main business-logic layer of the repository.
+The main services are:
 
-### 3. Persistence layer
+- `CrawlerService`: fetch metadata and persist artifacts
+- `ParserService`: choose the best available input and derive references plus citation blocks
+- `ExtractorService`: build citation candidates and ask the LLM for mention semantics
+- `OrchestratorService`: run crawl -> parse -> extract for one or more papers
+- `JobTracker`: persist execution history
 
-`src/briefgpt_arxiv/db.py` and `src/briefgpt_arxiv/models.py`
+This is the main center of the system.
 
-- owns SQLAlchemy engine and session construction
-- defines the ORM schema
-- persists pipeline state, artifacts, references, blocks, mentions, and jobs
-- uses SQLite by default through `DATABASE_URL`, while remaining compatible with SQLAlchemy-supported databases
+### Persistence layer
 
-### 4. Provider and prompt layer
+`db.py` and `models.py` define durable pipeline state.
 
-`src/briefgpt_arxiv/llm_client.py` and `src/briefgpt_arxiv/prompts.py`
+Important properties:
 
-- centralizes Gemini and OpenAI-compatible LLM calls
-- centralizes prompt templates and JSON schemas
-- keeps model-specific logic out of parser and extractor flow control
+- SQLite is the default backing store
+- the same database is used by the API and scripts
+- rows represent real pipeline boundaries, not just cache
+- reruns overwrite stage outputs instead of layering ephemeral state on top
 
-### 5. Tooling layer
+### LLM layer
 
-`scripts/`
+`llm_client.py` and `prompts.py` isolate model-provider behavior from pipeline orchestration.
 
-- `run_pipeline.py` runs the full pipeline in either network-backed or local-artifact mode
-- `run_demo.sh` wraps a local demo workflow
-- `inspect_db.py` provides inspection and ad hoc query tooling
+That layer is responsible for:
 
-These scripts operate on the same database and service layer used by the API.
+- provider-specific HTTP payloads
+- retry behavior
+- response text extraction
+- JSON parsing
+- prompt construction
 
-## Repository Map
-
-Key repository paths:
-
-- `src/briefgpt_arxiv/main.py`
-- `src/briefgpt_arxiv/config.py`
-- `src/briefgpt_arxiv/db.py`
-- `src/briefgpt_arxiv/models.py`
-- `src/briefgpt_arxiv/schemas.py`
-- `src/briefgpt_arxiv/llm_client.py`
-- `src/briefgpt_arxiv/prompts.py`
-- `src/briefgpt_arxiv/services/crawler.py`
-- `src/briefgpt_arxiv/services/parser.py`
-- `src/briefgpt_arxiv/services/extractor.py`
-- `src/briefgpt_arxiv/services/orchestrator.py`
-- `src/briefgpt_arxiv/services/jobs.py`
-- `src/briefgpt_arxiv/services/contracts.py`
-- `scripts/run_pipeline.py`
-- `scripts/run_demo.sh`
-- `scripts/inspect_db.py`
-- `tests/`
-- `artifacts/`
-
-## Configuration and Startup
-
-Configuration lives in `src/briefgpt_arxiv/config.py`.
-
-Startup behavior:
-
-- `.env` is loaded manually if present
-- configuration is exposed through a `Settings` dataclass
-- important settings are `DATABASE_URL`, `ARTIFACT_ROOT`, `OPEN_ROUTER_API_KEY`, `GEMINI_API_KEY`, `SUMMARY_DEBUG_LOG_PATH`, and `config.yaml:llm.parser` / `config.yaml:llm.extractor`
-
-Database construction lives in `src/briefgpt_arxiv/db.py`.
-
-- the SQLAlchemy engine is created once at import time
-- SQLite runs with `check_same_thread=False`
-- `SessionLocal` is the shared session factory
-- `init_db()` imports ORM models and creates tables through `Base.metadata.create_all`
-- `get_db()` provides per-request sessions for FastAPI
-
-This keeps startup simple and makes the same persistence setup reusable across API routes and scripts.
+Parser and extractor should describe the task they need solved, not how to talk to a vendor API.
 
 ## Data Model
 
-The schema is paper-centric.
+The database schema is paper-centric.
 
 ```mermaid
 erDiagram
     papers ||--o{ artifacts : has
     papers ||--o{ paper_references : has
     papers ||--o{ citation_blocks : has
-    paper_references ||--o{ citation_mentions : has
-    citation_blocks ||--o{ citation_mentions : has
+    paper_references ||--o{ citation_mentions : cited_by
+    citation_blocks ||--o{ citation_mentions : contains
 ```
 
-### `papers`
+### papers
 
-Represents one arXiv paper version and its workflow state.
+One row per arXiv paper version.
 
 Important fields:
 
@@ -165,41 +147,32 @@ Important fields:
 - `title`
 - `abstract`
 - `primary_category`
-- `published_at`
-- `updated_at_source`
 - `ingest_status`
 - `parse_status`
 - `parsed_at`
 
-`papers` is the anchor row for the pipeline.
+This is the root row for the rest of the pipeline.
 
-### `artifacts`
+### artifacts
 
-Represents raw or derived files associated with a paper.
+Files associated with a paper.
 
-Important fields:
-
-- `paper_id`
-- `artifact_type`
-- `uri`
-- `checksum`
-- `size_bytes`
-
-Typical artifact types used by the code are:
+Typical artifact types:
 
 - `pdf`
 - `source`
 - `pdf_text`
 - `structured_parse`
 
-### `paper_references`
+Artifacts may be downloaded or derived.
 
-Represents the local bibliography extracted from one paper.
+### paper_references
+
+The paper-local bibliography extracted from the chosen input artifact.
 
 Important fields:
 
 - `local_ref_id`
-- `raw_text`
 - `title`
 - `authors_json`
 - `year`
@@ -207,11 +180,11 @@ Important fields:
 - `cited_arxiv_id`
 - `cited_version`
 
-References are scoped to a paper through `(paper_id, local_ref_id)`.
+The system treats references as scoped to the source paper.
 
-### `citation_blocks`
+### citation_blocks
 
-Represents text chunks produced by parsing.
+Parsed text chunks produced by the parser.
 
 Important fields:
 
@@ -223,11 +196,11 @@ Important fields:
 - `has_citations`
 - `repair_used`
 
-The parser writes one row per extracted chunk and marks whether the block is citation-bearing.
+The parser writes all sections it decides to keep, then marks which ones actually contain citations.
 
-### `citation_mentions`
+### citation_mentions
 
-Represents mention-level citation semantics.
+Mention-level extraction output.
 
 Important fields:
 
@@ -243,11 +216,11 @@ Important fields:
 - `json_result`
 - `status`
 
-This is the main output consumed by search and downstream citation analysis.
+This is the main downstream retrieval surface for citation-aware search and future research-agent use.
 
-### `ingestion_jobs`
+### ingestion_jobs
 
-Represents execution history for pipeline stages.
+Execution history for crawl, parse, and extract.
 
 Important fields:
 
@@ -259,337 +232,205 @@ Important fields:
 - `started_at`
 - `finished_at`
 
-This table provides stage-level observability rather than full event sourcing.
+Jobs are part of the architecture, not logging trivia. They make reruns inspectable.
 
-## Service Architecture
+## Pipeline Stages
 
-### Crawler
+### Crawl
 
-`src/briefgpt_arxiv/services/crawler.py`
+`CrawlerService` does three things:
 
-Primary objects:
+1. query arXiv metadata
+2. upsert the corresponding `papers` row
+3. download and persist raw artifacts
 
-- `ArxivClient`
-- `CrawlerService`
-- `ArxivPaperRecord`
+The crawler writes artifact files under `ARTIFACT_ROOT/<arxiv_id>/<version>/`.
 
-Responsibilities:
+It currently stores:
 
-- fetch a single arXiv record from the Atom API
-- normalize title, abstract, version, category, and timestamps
-- download `pdf` and `source` artifacts
-- upsert the `papers` row
-- persist artifact metadata
-- record crawl jobs
+- the PDF
+- the source bundle
 
-Operational notes:
+### Parse
 
-- each requested arXiv id is processed independently
-- artifacts are stored under `ARTIFACT_ROOT/<arxiv_id>/<version>/`
-- a crawl marks the paper as `ingest_status="fetched"`
-- failures are recorded in `ingestion_jobs`
+`ParserService` converts one available artifact into references plus citation blocks.
 
-### Parser
-
-`src/briefgpt_arxiv/services/parser.py`
-
-Primary objects:
-
-- `ParserService`
-- `ParseInputSelection`
-- `ParseRunResult`
-- `ParsedDocument`
-- `ReferencePayload`
-- `SectionPayload`
-- `ParserRepairClient`
-- `LLMParserRepairClient`
-
-Responsibilities:
-
-- choose the best available parse input
-- parse structured JSON when available
-- parse source bundles from `.tex`, `.bib`, `.bbl`, or source tarballs
-- extract PDF text and parse citation-bearing blocks from PDFs when needed
-- produce reference rows and citation blocks
-- persist derived `pdf_text` artifacts when direct PDF extraction is used
-- record parse jobs
-
-Artifact selection order:
+Input priority is:
 
 1. `structured_parse`
 2. `source`
 3. `pdf_text`
 4. `pdf`
 
-Output behavior:
+This priority reflects trust in the inputs:
 
-- references are written to `paper_references`
-- all extracted sections are written to `citation_blocks`
-- citation-bearing sections set `has_citations=True`
-- parser-level repair can mark `repair_used=True`
+- structured parse is the richest and most explicit
+- source is preferable to PDF when available
+- PDF text is a fallback
+- raw PDF is the last resort and is first converted into `pdf_text`
 
-Source parsing behavior:
+#### Structured parse path
 
-- splits section content by LaTeX section markers
-- extracts citation keys from `\cite...{...}` macros
-- extracts bibliography entries from `\bibitem` and BibTeX
-- normalizes LaTeX-heavy text into cleaner plain text
+The parser expects a top-level `latex_parse` object with:
 
-PDF parsing behavior:
+- `bib_entries`
+- `body_text`
 
-- extracts text with `pypdf`
-- writes a `pdf_text` artifact beside the PDF
-- reconstructs paragraphs from line-based PDF output
-- detects numeric bracket citations such as `[4]`, `[4,5]`, and `[1-3]`
-- groups multiline references under a `References` section
-- filters common PDF noise like page numbers and `arXiv:` lines
+This path is treated as already structured.
+It does not route the text through repair logic.
 
-Rerun behavior:
+#### Source path
 
-- `parse_paper(..., rerun=False)` reuses existing parse outputs and records a skipped job
-- `parse_paper(..., rerun=True)` clears prior parse outputs before rebuilding them
-- clearing parse outputs also clears downstream mentions linked through those blocks
+The source parser:
 
-State behavior:
+- strips LaTeX comments before extraction
+- extracts bibliography data from `thebibliography`, `.bbl`, and `.bib`
+- splits text into section-like fragments
+- detects citation-bearing paragraphs
+- uses the repair client only when the paragraph shows non-standard citation macros
 
-- successful parse sets `parse_status="parsed"`
-- successful parse sets `ingest_status="parsed"`
-- `parsed_at` records completion time
+This keeps normal LaTeX `\cite{...}` handling direct while still allowing an LLM-backed repair step for unusual source forms.
 
-### Extractor
+#### PDF path
 
-`src/briefgpt_arxiv/services/extractor.py`
+The PDF path is intentionally heuristic.
 
-Primary objects:
+It:
 
-- `ExtractorService`
-- `BaseExtractionClient`
-- `LLMExtractionClient`
-- `ExtractionRunResult`
-- `CitationCandidate`
-- `ExtractedCitation`
+- extracts plain text from the PDF when needed
+- reconstructs paragraphs
+- recognizes numbered references like `[12]`
+- derives `REF<n>` local keys
+- extracts rough reference titles and years
 
-Responsibilities:
+The PDF parser is a fallback path, not the preferred canonical parse.
 
-- read citation-bearing blocks for a paper
-- build candidate mentions against the paper-local reference map
-- call the extraction client for structured annotation
-- persist mention-level outputs
-- record extraction jobs
+### Extract
 
-Candidate generation behavior:
+`ExtractorService` operates on parsed citation blocks and the paper-local reference map.
 
-- candidates are derived from `raw_citation_keys`
-- each candidate carries `mention_order`
-- a sentence is selected by matching the raw key or reference title against the block text
+Its flow is:
 
-LLM behavior:
+1. load citation-bearing blocks
+2. load paper-local references
+3. build deterministic citation candidates
+4. render the extraction prompt
+5. require one structured JSON response shape: `{"items": [...]}`
+6. persist one `citation_mentions` row per extracted citation mention
 
-- extraction requires credentials for the configured provider
-- the configured LLM client returns schema-constrained JSON
-- prompts and JSON schema are centralized in `prompts.py`
-- debug records are appended to `SUMMARY_DEBUG_LOG_PATH`
+Important design choices:
 
-Output behavior:
+- unknown citation keys are skipped rather than guessed
+- candidate generation is deterministic and separate from the LLM
+- the LLM only annotates semantics, it does not decide which citations exist
+- extraction outputs are normalized before persistence
 
-- one `CitationMention` row is written per extracted candidate
-- the row stores both normalized fields and a raw `json_result`
-- successful extraction sets `paper.ingest_status="ready"`
+## LLM Architecture
 
-Rerun behavior:
+`llm_client.py` currently supports two providers:
 
-- `extract_for_paper_result(..., rerun=False)` reuses existing mentions and records a skipped job
-- `extract_for_paper_result(..., rerun=True)` clears previous mentions before rebuilding them
+- `GeminiAPIClient`
+- `OpenAICompatibleClient`
 
-### Orchestrator
+The interface is intentionally small:
 
-`src/briefgpt_arxiv/services/orchestrator.py`
+- `generate_json(system_instruction, user_text)`
+- `generate_text(system_instruction, user_text)`
 
-Primary object:
+The OpenAI-compatible path is used for both DeepSeek and OpenRouter-hosted OpenAI models.
+Its request format is unified around OpenRouter chat-completions with content-part messages.
 
-- `OrchestratorService`
+The client layer owns:
 
-Responsibilities:
+- transport retries
+- body-level retry handling for retryable provider errors
+- provider-specific response parsing
+- JSON extraction from model text responses
 
-- compose crawler, parser, and extractor under one session
-- run the full pipeline for a list of arXiv ids
-- expose structured `PipelineRunResult` values for script consumers
+Prompt templates live in `prompts.py`.
 
-The orchestrator is intentionally thin. It coordinates stages and leaves stage-specific behavior in the underlying services.
+The prompts intentionally:
 
-### Job Tracking
+- describe required JSON fields explicitly
+- avoid embedding large JSON schemas in the prompt
+- keep provider behavior out of service logic
 
-`src/briefgpt_arxiv/services/jobs.py`
+## Orchestration and Reruns
 
-Primary object:
+`OrchestratorService` is intentionally thin.
 
-- `JobTracker`
+It exists to compose:
 
-Responsibilities:
+- crawler
+- parser
+- extractor
 
-- create `started` job rows
-- finish jobs as `completed` or `skipped`
-- record `failed` rows with an error message
-- compute `attempt_count` per `(job_type, target_id)`
+Stage services remain independently runnable.
 
-The same tracker is shared by crawl, parse, extract, and local-artifact restore flows.
+Rerun behavior is explicit:
 
-## LLM and Prompt Architecture
+- parse can reuse existing parse outputs or rebuild them
+- extract can reuse existing mentions or rebuild them
+- rebuilding a stage clears that stage's persisted outputs first
 
-LLM behavior is deliberately centralized.
+This keeps state transitions understandable and reduces accidental duplication.
 
-### `llm_client.py`
+## API and Script Surface
 
-- exposes a provider-neutral LLM client interface
-- supports Gemini `generateContent`
-- supports OpenAI-compatible chat completions such as OpenRouter
-- supports `generate_json` and `generate_text`
-- chooses the concrete provider from `config.yaml`
-- raises early if the configured provider is missing credentials
+### API
 
-### `prompts.py`
-
-- defines parser-repair and extractor prompt versions
-- holds the Jinja environment used to render prompts
-- defines JSON schemas used to constrain model output
-
-Two LLM-assisted operations exist in the codebase:
-
-- parser repair for citation-bearing text cleanup
-- extractor annotation for citation intent and retrieval-oriented summaries
-
-## API Surface
-
-The HTTP API is defined in `src/briefgpt_arxiv/main.py`.
-
-Workflow endpoints:
+Current API endpoints:
 
 - `POST /crawl/arxiv`
 - `POST /parse/{paper_id}`
 - `POST /extract/{paper_id}`
-
-Read endpoints:
-
 - `GET /papers/{arxiv_id}`
 - `GET /papers/{arxiv_id}/references`
 - `GET /citations/search`
 
-Response shaping:
+The API is for operation and inspection, not for embedding business logic.
 
-- request and response models live in `schemas.py`
-- route handlers convert ORM-backed data into explicit response models
-- the API reads mostly from persisted state rather than service-returned contracts
+### Scripts
 
-Search behavior:
+Operational scripts mirror the same service layer:
 
-- search is driven by `CitationMention`
-- optional filters exist for `intent_label` and free-text keyword matching
-- keyword search checks block text, selected sentence text, and extracted summary text
+- `scripts/run_pipeline.py`: full pipeline runner
+- `scripts/run_demo.sh`: local demo wrapper
+- `scripts/inspect_db.py`: inspection and ad hoc SQL utility
 
-## Operational Scripts
-
-### `scripts/run_pipeline.py`
-
-This is the main operational CLI.
-
-It supports:
-
-- `crawl` mode, which runs the full network-backed pipeline through `OrchestratorService`
-- `local-artifacts` mode, which restores a paper and its artifacts from the local artifact tree
-- parse and extract reuse flags
-- JSON and text output modes
-
-In local-artifact mode:
-
-- the script requires a versioned arXiv id such as `2603.15726v1`
-- it restores known local artifacts into the database
-- it creates a crawl job entry describing that the paper was restored from local artifacts
-
-### `scripts/run_demo.sh`
-
-- wraps `run_pipeline.py`
-- defaults to a checked-in artifact-backed demo flow
-- can switch between local-artifact mode and crawl mode
-
-### `scripts/inspect_db.py`
-
-Provides inspection commands for:
-
-- overview counts
-- per-paper details
-- mentions
-- extractions
-- blocks
-- jobs
-- raw SQL
-
-Paper lookup commands accept either canonical ids such as `2603.15726` or versioned ids such as `2603.15726v1`.
-- schema and row dumps
-
-This script is the main local observability tool for understanding pipeline results.
+There is no separate script-only architecture.
+Scripts and API call the same services against the same schema.
 
 ## Dependency Direction
 
-Preferred dependency flow:
+The intended dependency direction is:
 
 ```text
-FastAPI routes / CLI scripts
-  -> services
-    -> models + db
-    -> prompts
-    -> Gemini client
-    -> utils
+API / scripts
+    -> services
+        -> models / db
+        -> llm_client / prompts
+        -> utils / config
 ```
 
-Important constraints that the code already follows:
+Important constraints:
 
-- route handlers stay thin
-- services own workflow logic
-- prompts do not depend on services
-- the provider client does not depend on service modules
-- scripts call services instead of reimplementing core pipeline behavior
+- services may depend on ORM models and LLM clients
+- prompts should not depend on services
+- API handlers should not own pipeline logic
+- database rows should be the system of record for pipeline state
 
-## State Model
+## Design Principles
 
-The system tracks both paper-level state and job-level history.
+The current architecture follows these working rules:
 
-Paper-level state:
+- prefer persisted stage boundaries over hidden in-memory flows
+- prefer deterministic parsing and candidate generation over LLM guesswork
+- keep provider-specific behavior in the client layer
+- use LLMs for narrow semantic extraction, not for broad orchestration
+- allow breaking changes when they improve correctness and clarity
+- remove obsolete compatibility logic rather than preserving it indefinitely
 
-- `ingest_status` moves through paper lifecycle states such as `discovered`, `fetched`, `parsed`, and `ready`
-- `parse_status` tracks parse readiness separately
-
-Job-level history:
-
-- each stage writes rows into `ingestion_jobs`
-- statuses include `started`, `completed`, `skipped`, and `failed`
-- retries are counted explicitly with `attempt_count`
-
-This combination provides a lightweight workflow model:
-
-- `papers` answers "what is the latest state of this paper?"
-- `ingestion_jobs` answers "what happened when the pipeline last ran?"
-
-## Testing Shape
-
-The test suite in `tests/` is organized around the repository's main boundaries:
-
-- crawler behavior
-- parser behavior
-- extractor behavior
-- API behavior
-- prompt behavior
-- database behavior
-
-Fixtures include source-like text, doc2json-like JSON, XML feeds, and PDF-text samples. This mirrors the repository's emphasis on artifact-driven parsing and inspectable outputs.
-
-## Architectural Characteristics
-
-The codebase is optimized for a specific style of operation:
-
-- persistence-first rather than memory-first
-- explicit intermediate outputs rather than opaque end-to-end inference
-- inspectable reruns rather than hidden retries
-- thin entrypoints and concentrated service logic
-- local artifact workflows alongside network-backed workflows
-
-Those characteristics make the repository well suited to iterative document pipeline work, debugging parse quality, and building downstream citation-aware retrieval on top of durable intermediate state.
+This repository is still pre-release.
+The goal is not maximum flexibility.
+The goal is a clean, robust, inspectable ingestion and citation knowledge base.
