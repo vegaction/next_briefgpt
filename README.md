@@ -102,6 +102,34 @@ uv run python scripts/run_extractor.py 2603.15726v1
 uv run python scripts/run_extractor.py 1 --skip-if-ready
 ```
 
+## Summary Eval MVP
+
+The repo includes a minimal summary evaluation harness for the question:
+`did this summary distill the best available insight from the citation input without overreaching?`
+
+1. Export starter rows for manual labeling:
+
+```bash
+uv run python scripts/export_summary_eval_candidates.py --limit 100
+```
+
+2. Run the MVP harness on a labeled JSONL file:
+
+```bash
+uv run python scripts/run_summary_eval.py \
+  --samples data/summary_eval/mvp_examples.jsonl \
+  --predictions data/summary_eval/mvp_predictions_example.jsonl \
+  --judge-mode heuristic
+```
+
+If you already have `mention_id` values in the gold file, you can omit `--predictions` and score the current DB summaries directly.
+
+The MVP reports only three core metrics:
+
+- `Insight Correctness`
+- `Insight Lift`
+- `Overreach Rate`
+
 ## Environment
 
 - `DATABASE_URL`: SQLAlchemy URL, defaults to `sqlite:///./briefgpt.db`

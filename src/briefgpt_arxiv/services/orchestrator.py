@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from briefgpt_arxiv.services.contracts import PipelineRunResult
 from briefgpt_arxiv.services.crawler import CrawlerService
-from briefgpt_arxiv.services.extractor import BaseExtractionClient, ExtractorService
+from briefgpt_arxiv.services.extractor import ExtractorService
 from briefgpt_arxiv.services.parser import ParserRepairClient, ParserService
 
 
@@ -13,12 +13,11 @@ class OrchestratorService:
         self,
         session: Session,
         repair_client: ParserRepairClient | None = None,
-        extraction_client: BaseExtractionClient | None = None,
     ) -> None:
         self.session = session
         self.crawler = CrawlerService(session)
         self.parser = ParserService(session, repair_client=repair_client)
-        self.extractor = ExtractorService(session, client=extraction_client)
+        self.extractor = ExtractorService(session)
 
     def run_for_arxiv_ids(self, arxiv_ids: list[str]) -> list[int]:
         return [result.paper_id for result in self.run_pipeline_for_arxiv_ids(arxiv_ids)]

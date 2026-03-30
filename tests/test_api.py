@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
@@ -9,25 +10,8 @@ from fastapi.testclient import TestClient
 from briefgpt_arxiv.config import settings
 from briefgpt_arxiv.main import app
 from briefgpt_arxiv.models import Artifact, CitationMention, Paper
-from briefgpt_arxiv.services.extractor import BaseExtractionClient, ExtractedCitation, ExtractorService
+from briefgpt_arxiv.services.extractor import ExtractorService
 from tests.helpers import FIXTURES, get_session, reset_database
-
-
-class FakeExtractionClient(BaseExtractionClient):
-    model_name = "fake-llm"
-
-    def annotate_candidates(self, candidates, raw_text, section_title, references, debug_context=None):
-        return [
-            ExtractedCitation(
-                raw_citation_key=candidates[0].raw_citation_key,
-                citation_mention=candidates[0].citation_mention,
-                sentence_text=candidates[0].sentence_text,
-                section_title=candidates[0].section_title,
-                mention_order=candidates[0].mention_order,
-                intent_label="method_use",
-                summary="ReAct is used as a planning baseline and method reference.",
-            )
-        ]
 
 
 class ApiTests(TestCase):
@@ -61,11 +45,12 @@ class ApiTests(TestCase):
         self.assertEqual(200, parse_response.status_code)
         self.assertEqual(2, parse_response.json()["citation_blocks_created"])
 
-        ExtractorService(self.session, client=FakeExtractionClient()).extract_for_paper(paper.id)
+        llm_client = TestClientLLM()
+        ExtractorService(self.session, llm_client=llm_client).extract_for_paper(paper.id)
 
         paper_response = self.client.get("/papers/2603.15726v1")
         refs_response = self.client.get("/papers/2603.15726v1/references")
-        search_response = self.client.get("/citations/search", params={"intent": "method_use"})
+        search_response = self.client.get("/citations/search", params={"intent": "method_basis"})
 
         self.assertEqual(200, paper_response.status_code)
         self.assertEqual(200, refs_response.status_code)
@@ -103,3 +88,26 @@ class ApiTests(TestCase):
         finally:
             settings.openrouter_api_key = original_openrouter_api_key
             settings.gemini_api_key = original_gemini_api_key
+
+
+class TestClientLLM:
+    model_name = "fake-llm"
+
+    def generate_json(self, system_instruction: str, user_text: str) -> dict:
+        candidates_block = re.search(r"### Candidates\s+```json\s+(.*?)\s+```", user_text, re.DOTALL)
+        candidates_text = candidates_block.group(1) if candidates_block else user_text
+        mention_orders = sorted({int(value) for value in re.findall(r'"mention_order":\s*(\d+)', candidates_text)})
+        return {
+            "items": [
+                {
+                    "mention_order": mention_order,
+                    "intent_label": "method_basis" if mention_order == 0 else "comparison",
+                    "summary": (
+                        "ReAct is used as a planning baseline and method reference."
+                        if mention_order == 0
+                        else "TravelPlanner is used as a comparison baseline."
+                    ),
+                }
+                for mention_order in mention_orders
+            ]
+        }
