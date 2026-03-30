@@ -79,7 +79,7 @@ Distill the candidate citation mentions into citation semantics and commentary a
 - `summary` should read like a compact but complete expert commentary note about the cited work, not just a shortened sentence.
 - `summary` should capture the cited paper's core idea, distinctive contribution, benchmark role, or a substantive evaluation/discussion of it in this paper.
 - `summary` may synthesize evidence from the full `raw_text`, the candidate `sentence_text`, and the candidate's embedded reference metadata.
-- Prefer `summary` to name the cited work, method, benchmark, dataset, system, or authors explicitly, ideally as the subject.
+- Prefer `summary` to name the cited work, method, benchmark, or system explicitly, ideally as the subject.
 - When possible, begin `summary` with that name rather than with a generic lead-in or subjectless fragment.
 - If the citation context is written partly in terms of the current paper's use of the cited work, rewrite that evidence into a standalone description of the cited work instead of repeating the current paper framing.
 - Avoid bibliographic lead-ins such as `Yao et al. (2024) introduce ...`, `Smith et al. propose ...`, or `Brown et al. present ...` when the cited work name can be used as the subject instead.
