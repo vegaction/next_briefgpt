@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from briefgpt_arxiv.config import settings
 from briefgpt_arxiv.llm_client import BaseLLMClient, create_llm_client
-from briefgpt_arxiv.models import CitationBlock, CitationMention, Paper, PaperReference
+from briefgpt_arxiv.models import Artifact, CitationBlock, CitationMention, Paper, PaperReference
 from briefgpt_arxiv.prompts import (
     EXTRACTOR_PROMPT_VERSION,
     EXTRACTION_SYSTEM_TEMPLATE,
@@ -20,7 +20,7 @@ from briefgpt_arxiv.prompts import (
 )
 from briefgpt_arxiv.services.contracts import ExtractionRunResult
 from briefgpt_arxiv.services.jobs import JobTracker
-from briefgpt_arxiv.utils import normalize_whitespace, split_sentences
+from briefgpt_arxiv.utils import ensure_parent, normalize_whitespace, sha256sum, split_sentences, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +84,30 @@ class ExtractorService:
 
         existing_mentions = self._count_mentions(paper_id)
         if not rerun and existing_mentions:
+            blocks = list(
+                self.session.scalars(
+                    select(CitationBlock).where(
+                        CitationBlock.paper_id == paper_id,
+                        CitationBlock.has_citations.is_(True),
+                    )
+                )
+            )
             job = self.job_tracker.start(job_type="extract", target_id=paper_id)
             self.job_tracker.finish(job, status="skipped", error_message="Reused existing extraction outputs.")
+            self._write_extract_report(
+                paper=paper,
+                payload=self._build_extract_report_payload(
+                    paper_id=paper_id,
+                    blocks_seen=len(blocks),
+                    blocks_skipped_non_narrative=sum(1 for block in blocks if should_skip_extraction_block(block.raw_text)),
+                    candidates_total=0,
+                    llm_call_count=0,
+                    missing_reference_keys_total=0,
+                    mentions_created=existing_mentions,
+                    cleanup_performed=False,
+                    status="skipped",
+                ),
+            )
             self.session.commit()
             return ExtractionRunResult(
                 paper_id=paper.id,
@@ -121,8 +143,13 @@ class ExtractorService:
             }
 
             mentions_created = 0
+            blocks_skipped_non_narrative = 0
+            candidates_total = 0
+            llm_call_count = 0
+            missing_reference_keys_total = 0
             for block in blocks:
                 missing_reference_keys = [key for key in block.raw_citation_keys if key not in references]
+                missing_reference_keys_total += len(missing_reference_keys)
                 if missing_reference_keys:
                     logger.warning(
                         "Skipping unknown citation keys before extraction paper_id=%s block_id=%s keys=%s",
@@ -139,7 +166,9 @@ class ExtractorService:
                 )
                 if not candidates:
                     continue
+                candidates_total += len(candidates)
                 if should_skip_extraction_block(block.raw_text):
+                    blocks_skipped_non_narrative += 1
                     logger.info(
                         "Skipping non-narrative citation block before extraction paper_id=%s block_id=%s section=%r",
                         paper_id,
@@ -188,6 +217,7 @@ class ExtractorService:
                 )
                 payload: dict | None = None
                 try:
+                    llm_call_count += 1
                     payload = self.llm_client.generate_json(
                         system_instruction=system_instruction,
                         user_text=user_text,
@@ -281,6 +311,20 @@ class ExtractorService:
 
             paper.ingest_status = "ready"
             self.job_tracker.finish(job)
+            self._write_extract_report(
+                paper=paper,
+                payload=self._build_extract_report_payload(
+                    paper_id=paper_id,
+                    blocks_seen=len(blocks),
+                    blocks_skipped_non_narrative=blocks_skipped_non_narrative,
+                    candidates_total=candidates_total,
+                    llm_call_count=llm_call_count,
+                    missing_reference_keys_total=missing_reference_keys_total,
+                    mentions_created=mentions_created,
+                    cleanup_performed=bool(existing_mentions),
+                    status="ready",
+                ),
+            )
             self.session.commit()
             return ExtractionRunResult(
                 paper_id=paper.id,
@@ -365,6 +409,55 @@ class ExtractorService:
             )
             or 0
         )
+
+    def _build_extract_report_payload(
+        self,
+        *,
+        paper_id: int,
+        blocks_seen: int,
+        blocks_skipped_non_narrative: int,
+        candidates_total: int,
+        llm_call_count: int,
+        missing_reference_keys_total: int,
+        mentions_created: int,
+        cleanup_performed: bool,
+        status: str,
+    ) -> dict:
+        paper = self.session.get(Paper, paper_id)
+        assert paper is not None
+        return {
+            "generated_at": utcnow_naive().isoformat(),
+            "paper_id": paper_id,
+            "arxiv_id": paper.arxiv_id,
+            "version": paper.version,
+            "status": status,
+            "model_name": self.model_name,
+            "blocks_seen": blocks_seen,
+            "blocks_skipped_non_narrative": blocks_skipped_non_narrative,
+            "candidates_total": candidates_total,
+            "llm_call_count": llm_call_count,
+            "missing_reference_keys_total": missing_reference_keys_total,
+            "mentions_created": mentions_created,
+            "cleanup_performed": cleanup_performed,
+        }
+
+    def _write_extract_report(self, *, paper: Paper, payload: dict) -> None:
+        report_path = settings.artifact_root / paper.arxiv_id / paper.version / "extract_report.json"
+        ensure_parent(report_path)
+        report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        checksum = sha256sum(report_path)
+        artifact = self.session.scalar(
+            select(Artifact).where(
+                Artifact.paper_id == paper.id,
+                Artifact.artifact_type == "extract_report",
+            )
+        )
+        if artifact is None:
+            artifact = Artifact(paper_id=paper.id, artifact_type="extract_report", uri=str(report_path))
+            self.session.add(artifact)
+        artifact.uri = str(report_path)
+        artifact.checksum = checksum
+        artifact.size_bytes = report_path.stat().st_size
 
 
 def postprocess_extracted_summary(

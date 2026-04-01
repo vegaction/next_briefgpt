@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tarfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -65,6 +66,15 @@ class ParserServiceTests(TestCase):
         self.assertEqual(3, self.session.query(PaperReference).count())
         self.assertEqual(3, self.session.query(CitationBlock).count())
         self.assertEqual(2, self.session.query(CitationBlock).filter(CitationBlock.has_citations.is_(True)).count())
+        report_artifact = self.session.query(Artifact).filter_by(paper_id=self.paper.id, artifact_type="parse_report").one()
+        report = json.loads(Path(report_artifact.uri).read_text())
+        self.assertEqual("parsed", report["status"])
+        self.assertEqual("structured_parse", report["source_artifact_type"])
+        self.assertEqual(3, report["section_count"])
+        self.assertEqual(3, report["reference_count"])
+        self.assertEqual(2, report["citation_block_count"])
+        self.assertEqual(0, report["blocks_with_unresolved_keys"])
+        self.assertEqual(report_artifact.size_bytes, Path(report_artifact.uri).stat().st_size)
         job = self.session.query(IngestionJob).one()
         self.assertEqual("completed", job.status)
         self.assertEqual(1, job.attempt_count)

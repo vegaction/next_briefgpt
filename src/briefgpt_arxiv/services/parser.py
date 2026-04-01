@@ -26,7 +26,7 @@ from briefgpt_arxiv.prompts import (
 )
 from briefgpt_arxiv.services.contracts import ParseInputSelection, ParseRunResult
 from briefgpt_arxiv.services.jobs import JobTracker
-from briefgpt_arxiv.utils import normalize_whitespace, utcnow_naive
+from briefgpt_arxiv.utils import ensure_parent, normalize_whitespace, sha256sum, utcnow_naive
 
 @dataclass(slots=True)
 class ReferencePayload:
@@ -149,6 +149,20 @@ class ParserService:
                 cleanup_performed=False,
                 status="skipped",
             )
+            self._write_parse_report(
+                paper=paper,
+                selection=selection,
+                payload=self._build_parse_report_payload(
+                    parsed=None,
+                    paper_id=paper_id,
+                    selection=selection,
+                    sections_created=result.sections_created,
+                    references_created=result.references_created,
+                    citation_blocks_created=result.citation_blocks_created,
+                    cleanup_performed=False,
+                    status="skipped",
+                ),
+            )
             job = self.job_tracker.start(job_type="parse", target_id=paper_id)
             self.job_tracker.finish(job, status="skipped", error_message="Reused existing parse outputs.")
             self.session.commit()
@@ -166,6 +180,20 @@ class ParserService:
             paper.parsed_at = utcnow_naive()
             paper.ingest_status = "parsed"
             self.job_tracker.finish(job)
+            self._write_parse_report(
+                paper=paper,
+                selection=selection,
+                payload=self._build_parse_report_payload(
+                    parsed=parsed,
+                    paper_id=paper_id,
+                    selection=selection,
+                    sections_created=sections_created,
+                    references_created=references_created,
+                    citation_blocks_created=citation_blocks_created,
+                    cleanup_performed=cleanup_performed,
+                    status="parsed",
+                ),
+            )
             self.session.commit()
             return self._build_parse_result(
                 paper=paper,
@@ -838,3 +866,91 @@ class ParserService:
                 citation_blocks_created += 1
         self.session.flush()
         return created, citation_blocks_created
+
+    def _build_parse_report_payload(
+        self,
+        *,
+        parsed: ParsedDocument | None,
+        paper_id: int,
+        selection: ParseInputSelection,
+        sections_created: int,
+        references_created: int,
+        citation_blocks_created: int,
+        cleanup_performed: bool,
+        status: str,
+    ) -> dict:
+        if parsed is not None:
+            reference_keys = {payload.local_ref_id for payload in parsed.references}
+            blocks_with_unresolved_keys = sum(
+                1
+                for payload in parsed.sections
+                if any(key not in reference_keys for key in payload.raw_citation_keys)
+            )
+            missing_reference_keys_total = sum(
+                1
+                for payload in parsed.sections
+                for key in payload.raw_citation_keys
+                if key not in reference_keys
+            )
+            repair_used_count = sum(1 for payload in parsed.sections if payload.repair_used)
+        else:
+            references = list(
+                self.session.scalars(select(PaperReference).where(PaperReference.paper_id == paper_id))
+            )
+            blocks = list(
+                self.session.scalars(select(CitationBlock).where(CitationBlock.paper_id == paper_id))
+            )
+            reference_keys = {reference.local_ref_id for reference in references}
+            blocks_with_unresolved_keys = sum(
+                1
+                for block in blocks
+                if any(key not in reference_keys for key in block.raw_citation_keys)
+            )
+            missing_reference_keys_total = sum(
+                1
+                for block in blocks
+                for key in block.raw_citation_keys
+                if key not in reference_keys
+            )
+            repair_used_count = sum(1 for block in blocks if block.repair_used)
+
+        return {
+            "generated_at": utcnow_naive().isoformat(),
+            "paper_id": paper_id,
+            "arxiv_id": selection.artifact_uri and self.session.get(Paper, paper_id).arxiv_id,
+            "version": self.session.get(Paper, paper_id).version,
+            "status": status,
+            "source_artifact_type": selection.artifact_type,
+            "source_artifact_uri": selection.artifact_uri,
+            "section_count": sections_created,
+            "reference_count": references_created,
+            "citation_block_count": citation_blocks_created,
+            "blocks_with_unresolved_keys": blocks_with_unresolved_keys,
+            "missing_reference_keys_total": missing_reference_keys_total,
+            "repair_used_count": repair_used_count,
+            "cleanup_performed": cleanup_performed,
+        }
+
+    def _write_parse_report(
+        self,
+        *,
+        paper: Paper,
+        selection: ParseInputSelection,
+        payload: dict,
+    ) -> None:
+        report_path = settings.artifact_root / paper.arxiv_id / paper.version / "parse_report.json"
+        ensure_parent(report_path)
+        report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        checksum = sha256sum(report_path)
+        artifact = self.session.scalar(
+            select(Artifact).where(
+                Artifact.paper_id == paper.id,
+                Artifact.artifact_type == "parse_report",
+            )
+        )
+        if artifact is None:
+            artifact = Artifact(paper_id=paper.id, artifact_type="parse_report", uri=str(report_path))
+            self.session.add(artifact)
+        artifact.uri = str(report_path)
+        artifact.checksum = checksum
+        artifact.size_bytes = report_path.stat().st_size

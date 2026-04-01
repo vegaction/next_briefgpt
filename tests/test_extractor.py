@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest import TestCase
 from unittest.mock import Mock
 
 from briefgpt_arxiv.config import settings
 from briefgpt_arxiv.models import (
+    Artifact,
     CitationBlock,
     CitationMention,
     IngestionJob,
@@ -92,6 +95,18 @@ class ExtractorServiceTests(TestCase):
         self.assertEqual(2, self.session.query(CitationMention).count())
         mention = self.session.query(CitationMention).filter_by(intent_label="comparison").one()
         self.assertEqual("fake-llm", mention.model)
+        report_artifact = self.session.query(Artifact).filter_by(
+            paper_id=self.paper_id,
+            artifact_type="extract_report",
+        ).one()
+        report = json.loads(Path(report_artifact.uri).read_text())
+        self.assertEqual("ready", report["status"])
+        self.assertEqual("fake-llm", report["model_name"])
+        self.assertEqual(1, report["blocks_seen"])
+        self.assertEqual(0, report["blocks_skipped_non_narrative"])
+        self.assertEqual(2, report["candidates_total"])
+        self.assertEqual(1, report["llm_call_count"])
+        self.assertEqual(2, report["mentions_created"])
         job = self.session.query(IngestionJob).one()
         self.assertEqual("completed", job.status)
         self.assertEqual(1, job.attempt_count)
