@@ -20,7 +20,7 @@ from briefgpt_arxiv.schemas import (
 from briefgpt_arxiv.services.crawler import CrawlerService
 from briefgpt_arxiv.services.extractor import ExtractionConfigurationError, ExtractorService
 from briefgpt_arxiv.services.parser import ParserService
-from briefgpt_arxiv.utils import arxiv_version_number, split_arxiv_id
+from briefgpt_arxiv.util import arxiv_version_number, split_arxiv_id
 
 app = FastAPI(title="briefgpt arXiv citations")
 init_db()

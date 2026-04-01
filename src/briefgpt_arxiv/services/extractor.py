@@ -20,7 +20,7 @@ from briefgpt_arxiv.prompts import (
 )
 from briefgpt_arxiv.services.contracts import ExtractionRunResult
 from briefgpt_arxiv.services.jobs import JobTracker
-from briefgpt_arxiv.utils import ensure_parent, normalize_whitespace, sha256sum, split_sentences, utcnow_naive
+from briefgpt_arxiv.util import ensure_parent, normalize_whitespace, sha256sum, split_sentences, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +120,7 @@ class ExtractorService:
                 model_name=self.model_name,
             )
 
-        job = self.job_tracker.start(job_type="extract", target_id=paper_id)
-        try:
+        with self.job_tracker.tracked_operation("extract", target_id=paper_id):
             if existing_mentions:
                 self.clear_extractions(paper_id)
 
@@ -310,7 +309,6 @@ class ExtractorService:
                     mentions_created += 1
 
             paper.ingest_status = "ready"
-            self.job_tracker.finish(job)
             self._write_extract_report(
                 paper=paper,
                 payload=self._build_extract_report_payload(
@@ -325,7 +323,6 @@ class ExtractorService:
                     status="ready",
                 ),
             )
-            self.session.commit()
             return ExtractionRunResult(
                 paper_id=paper.id,
                 arxiv_id=paper.arxiv_id,
@@ -336,11 +333,6 @@ class ExtractorService:
                 status="ready",
                 model_name=self.model_name,
             )
-        except Exception as exc:
-            self.session.rollback()
-            self.job_tracker.record_failure(job_type="extract", target_id=paper_id, error_message=str(exc))
-            self.session.commit()
-            raise
 
     @staticmethod
     def _parse_annotations(payload: dict) -> list[dict]:

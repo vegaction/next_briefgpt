@@ -21,7 +21,7 @@ from briefgpt_arxiv.models import (  # noqa: E402
     Paper,
     PaperReference,
 )
-from briefgpt_arxiv.utils import arxiv_version_number, split_arxiv_id  # noqa: E402
+from briefgpt_arxiv.util import arxiv_version_number, split_arxiv_id  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:

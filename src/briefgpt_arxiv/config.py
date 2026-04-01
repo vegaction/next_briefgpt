@@ -1,3 +1,19 @@
+"""Configuration loading for briefgpt-arxiv.
+
+Resolution priority (highest to lowest):
+1. Environment variables (including those loaded from ``.env``)
+2. ``config.yaml`` fields (used only for LLM endpoint settings)
+3. Hard-coded defaults in :class:`Settings`
+
+``.env`` is loaded via ``os.environ.setdefault``, so a variable that is
+already set in the real environment always wins over the ``.env`` file value.
+
+``config.yaml`` is consulted only for the ``llm.<endpoint>`` section
+(``parser`` and ``extractor``).  Within each endpoint block the keys
+``provider``, ``model_name``, and ``reasoning_enabled`` are read; if a key
+is absent the value falls back to an environment-variable default or a
+hard-coded default.
+"""
 from __future__ import annotations
 
 import os

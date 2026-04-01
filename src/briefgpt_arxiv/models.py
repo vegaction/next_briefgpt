@@ -6,7 +6,7 @@ from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Tex
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from briefgpt_arxiv.db import Base
-from briefgpt_arxiv.utils import utcnow_naive
+from briefgpt_arxiv.util import utcnow_naive
 
 
 class TimestampMixin:

@@ -4,11 +4,8 @@ import io
 import json
 import tarfile
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from unittest import TestCase
 from unittest.mock import Mock, patch
 
-from briefgpt_arxiv.config import settings
 from briefgpt_arxiv.models import Artifact, CitationBlock, IngestionJob, Paper, PaperReference
 from briefgpt_arxiv.services.parser import (
     LLMParserRepairClient,
@@ -16,7 +13,7 @@ from briefgpt_arxiv.services.parser import (
     ParserRepairClient,
     ParserService,
 )
-from tests.helpers import FIXTURES, get_session, reset_database
+from tests.conftest import FIXTURES, override_settings
 
 
 class FakeRepairClient(ParserRepairClient):
@@ -31,136 +28,138 @@ class FakeRepairClient(ParserRepairClient):
         )
 
 
-class ParserServiceTests(TestCase):
-    def setUp(self) -> None:
-        reset_database()
-        self.original_openrouter_api_key = settings.openrouter_api_key
-        self.original_gemini_api_key = settings.gemini_api_key
-        settings.openrouter_api_key = None
-        settings.gemini_api_key = None
-        self.session = get_session()
-        self.paper = Paper(arxiv_id="2603.15726", version="v1", title="Sample", abstract="A")
-        self.session.add(self.paper)
-        self.session.flush()
-        self.paper.parse_status = "pending"
-        self.session.commit()
-        self.tempdir = TemporaryDirectory()
+def _create_paper(db_session):
+    paper = Paper(arxiv_id="2603.15726", version="v1", title="Sample", abstract="A")
+    db_session.add(paper)
+    db_session.flush()
+    paper.parse_status = "pending"
+    db_session.commit()
+    return paper
 
-    def tearDown(self) -> None:
-        settings.openrouter_api_key = self.original_openrouter_api_key
-        settings.gemini_api_key = self.original_gemini_api_key
-        self.session.close()
-        self.tempdir.cleanup()
 
-    def test_parse_structured_doc_creates_sections_references_and_blocks(self) -> None:
-        structured_path = Path(self.tempdir.name) / "structured.json"
-        structured_path.write_text((FIXTURES / "doc2json_sample.json").read_text())
-        artifact = Artifact(paper_id=self.paper.id, artifact_type="structured_parse", uri=str(structured_path))
-        self.session.add(artifact)
-        self.session.commit()
+def test_parse_structured_doc_creates_sections_references_and_blocks(db_session, tempdir, no_llm_keys) -> None:
+    paper = _create_paper(db_session)
+    structured_path = Path(tempdir.name) / "structured.json"
+    structured_path.write_text((FIXTURES / "doc2json_sample.json").read_text())
+    artifact = Artifact(paper_id=paper.id, artifact_type="structured_parse", uri=str(structured_path))
+    db_session.add(artifact)
+    db_session.commit()
 
-        service = ParserService(self.session)
-        result = service.parse_paper(self.paper.id)
+    service = ParserService(db_session)
+    result = service.parse_paper(paper.id)
 
-        self.assertEqual((3, 3, 2), result.as_tuple())
-        self.assertEqual(3, self.session.query(PaperReference).count())
-        self.assertEqual(3, self.session.query(CitationBlock).count())
-        self.assertEqual(2, self.session.query(CitationBlock).filter(CitationBlock.has_citations.is_(True)).count())
-        report_artifact = self.session.query(Artifact).filter_by(paper_id=self.paper.id, artifact_type="parse_report").one()
-        report = json.loads(Path(report_artifact.uri).read_text())
-        self.assertEqual("parsed", report["status"])
-        self.assertEqual("structured_parse", report["source_artifact_type"])
-        self.assertEqual(3, report["section_count"])
-        self.assertEqual(3, report["reference_count"])
-        self.assertEqual(2, report["citation_block_count"])
-        self.assertEqual(0, report["blocks_with_unresolved_keys"])
-        self.assertEqual(report_artifact.size_bytes, Path(report_artifact.uri).stat().st_size)
-        job = self.session.query(IngestionJob).one()
-        self.assertEqual("completed", job.status)
-        self.assertEqual(1, job.attempt_count)
-        self.assertIsNotNone(job.finished_at)
+    assert result.as_tuple() == (3, 3, 2)
+    assert db_session.query(PaperReference).count() == 3
+    assert db_session.query(CitationBlock).count() == 3
+    assert db_session.query(CitationBlock).filter(CitationBlock.has_citations.is_(True)).count() == 2
+    report_artifact = db_session.query(Artifact).filter_by(paper_id=paper.id, artifact_type="parse_report").one()
+    report = json.loads(Path(report_artifact.uri).read_text())
+    assert report["status"] == "parsed"
+    assert report["source_artifact_type"] == "structured_parse"
+    assert report["section_count"] == 3
+    assert report["reference_count"] == 3
+    assert report["citation_block_count"] == 2
+    assert report["blocks_with_unresolved_keys"] == 0
+    assert report_artifact.size_bytes == Path(report_artifact.uri).stat().st_size
+    job = db_session.query(IngestionJob).one()
+    assert job.status == "completed"
+    assert job.attempt_count == 1
+    assert job.finished_at is not None
 
-    def test_parse_result_includes_parse_contract_details(self) -> None:
-        structured_path = Path(self.tempdir.name) / "structured.json"
-        structured_path.write_text((FIXTURES / "doc2json_sample.json").read_text())
-        artifact = Artifact(paper_id=self.paper.id, artifact_type="structured_parse", uri=str(structured_path))
-        self.session.add(artifact)
-        self.session.commit()
 
-        result = ParserService(self.session).parse_paper(self.paper.id)
+def test_parse_result_includes_parse_contract_details(db_session, tempdir, no_llm_keys) -> None:
+    paper = _create_paper(db_session)
+    structured_path = Path(tempdir.name) / "structured.json"
+    structured_path.write_text((FIXTURES / "doc2json_sample.json").read_text())
+    artifact = Artifact(paper_id=paper.id, artifact_type="structured_parse", uri=str(structured_path))
+    db_session.add(artifact)
+    db_session.commit()
 
-        self.assertEqual(self.paper.id, result.paper_id)
-        self.assertEqual("2603.15726", result.arxiv_id)
-        self.assertEqual("v1", result.version)
-        self.assertEqual("structured_parse", result.source_artifact_type)
-        self.assertEqual(str(structured_path), result.source_artifact_uri)
-        self.assertFalse(result.cleanup_performed)
-        self.assertEqual("parsed", result.status)
+    result = ParserService(db_session).parse_paper(paper.id)
 
-    def test_parse_structured_doc_skips_repair_client(self) -> None:
-        structured_path = Path(self.tempdir.name) / "structured.json"
-        structured_path.write_text((FIXTURES / "doc2json_sample.json").read_text())
-        artifact = Artifact(paper_id=self.paper.id, artifact_type="structured_parse", uri=str(structured_path))
-        self.session.add(artifact)
-        self.session.commit()
+    assert result.paper_id == paper.id
+    assert result.arxiv_id == "2603.15726"
+    assert result.version == "v1"
+    assert result.source_artifact_type == "structured_parse"
+    assert result.source_artifact_uri == str(structured_path)
+    assert result.cleanup_performed is False
+    assert result.status == "parsed"
 
-        repair_client = Mock(spec=ParserRepairClient)
-        service = ParserService(self.session, repair_client=repair_client)
-        service.parse_paper(self.paper.id)
 
-        repair_client.repair.assert_not_called()
+def test_parse_structured_doc_skips_repair_client(db_session, tempdir, no_llm_keys) -> None:
+    paper = _create_paper(db_session)
+    structured_path = Path(tempdir.name) / "structured.json"
+    structured_path.write_text((FIXTURES / "doc2json_sample.json").read_text())
+    artifact = Artifact(paper_id=paper.id, artifact_type="structured_parse", uri=str(structured_path))
+    db_session.add(artifact)
+    db_session.commit()
 
-    def test_parse_skip_reuses_existing_outputs_and_records_skipped_job(self) -> None:
-        structured_path = Path(self.tempdir.name) / "structured.json"
-        structured_path.write_text((FIXTURES / "doc2json_sample.json").read_text())
-        artifact = Artifact(paper_id=self.paper.id, artifact_type="structured_parse", uri=str(structured_path))
-        self.session.add(artifact)
-        self.session.commit()
+    repair_client = Mock(spec=ParserRepairClient)
+    service = ParserService(db_session, repair_client=repair_client)
+    service.parse_paper(paper.id)
 
-        service = ParserService(self.session)
-        service.parse_paper(self.paper.id)
-        skipped = service.parse_paper(self.paper.id, rerun=False)
+    repair_client.repair.assert_not_called()
 
-        self.assertEqual((3, 3, 2), skipped.as_tuple())
-        self.assertEqual("skipped", skipped.status)
-        self.assertFalse(skipped.cleanup_performed)
-        jobs = self.session.query(IngestionJob).order_by(IngestionJob.id).all()
-        self.assertEqual(["completed", "skipped"], [job.status for job in jobs])
-        self.assertEqual([1, 2], [job.attempt_count for job in jobs])
 
-    def test_parse_structured_doc_requires_explicit_latex_parse_object(self) -> None:
-        structured_path = Path(self.tempdir.name) / "structured.json"
-        structured_path.write_text('{"body_text": [], "bib_entries": {}}')
-        artifact = Artifact(paper_id=self.paper.id, artifact_type="structured_parse", uri=str(structured_path))
-        self.session.add(artifact)
-        self.session.commit()
+def test_parse_skip_reuses_existing_outputs_and_records_skipped_job(db_session, tempdir, no_llm_keys) -> None:
+    paper = _create_paper(db_session)
+    structured_path = Path(tempdir.name) / "structured.json"
+    structured_path.write_text((FIXTURES / "doc2json_sample.json").read_text())
+    artifact = Artifact(paper_id=paper.id, artifact_type="structured_parse", uri=str(structured_path))
+    db_session.add(artifact)
+    db_session.commit()
 
-        with self.assertRaisesRegex(ValueError, "latex_parse"):
-            ParserService(self.session).parse_paper(self.paper.id)
+    service = ParserService(db_session)
+    service.parse_paper(paper.id)
+    skipped = service.parse_paper(paper.id, rerun=False)
 
-    def test_parse_source_uses_repair_client_for_nonstandard_macros(self) -> None:
-        source_path = Path(self.tempdir.name) / "source.tex"
-        source_path.write_text((FIXTURES / "latex_sample.tex").read_text())
-        artifact = Artifact(paper_id=self.paper.id, artifact_type="source", uri=str(source_path))
-        self.session.add(artifact)
-        self.session.commit()
+    assert skipped.as_tuple() == (3, 3, 2)
+    assert skipped.status == "skipped"
+    assert skipped.cleanup_performed is False
+    jobs = db_session.query(IngestionJob).order_by(IngestionJob.id).all()
+    assert [job.status for job in jobs] == ["completed", "skipped"]
+    assert [job.attempt_count for job in jobs] == [1, 2]
 
-        service = ParserService(self.session, repair_client=FakeRepairClient())
-        _, refs, blocks = service.parse_paper(self.paper.id).as_tuple()
 
-        self.assertEqual(3, refs)
-        self.assertEqual(2, blocks)
-        repaired_block = (
-            self.session.query(CitationBlock)
-            .filter(CitationBlock.repair_used.is_(True))
-            .one()
-        )
-        self.assertIn("BIBREF2", repaired_block.raw_citation_keys)
+def test_parse_structured_doc_requires_explicit_latex_parse_object(db_session, tempdir, no_llm_keys) -> None:
+    paper = _create_paper(db_session)
+    structured_path = Path(tempdir.name) / "structured.json"
+    structured_path.write_text('{"body_text": [], "bib_entries": {}}')
+    artifact = Artifact(paper_id=paper.id, artifact_type="structured_parse", uri=str(structured_path))
+    db_session.add(artifact)
+    db_session.commit()
 
-    def test_parse_source_skips_repair_for_standard_cite_macros(self) -> None:
-        source_path = Path(self.tempdir.name) / "source.tex"
-        source_path.write_text(
-            r"""
+    import pytest
+    with pytest.raises(ValueError, match="latex_parse"):
+        ParserService(db_session).parse_paper(paper.id)
+
+
+def test_parse_source_uses_repair_client_for_nonstandard_macros(db_session, tempdir, no_llm_keys) -> None:
+    paper = _create_paper(db_session)
+    source_path = Path(tempdir.name) / "source.tex"
+    source_path.write_text((FIXTURES / "latex_sample.tex").read_text())
+    artifact = Artifact(paper_id=paper.id, artifact_type="source", uri=str(source_path))
+    db_session.add(artifact)
+    db_session.commit()
+
+    service = ParserService(db_session, repair_client=FakeRepairClient())
+    _, refs, blocks = service.parse_paper(paper.id).as_tuple()
+
+    assert refs == 3
+    assert blocks == 2
+    repaired_block = (
+        db_session.query(CitationBlock)
+        .filter(CitationBlock.repair_used.is_(True))
+        .one()
+    )
+    assert "BIBREF2" in repaired_block.raw_citation_keys
+
+
+def test_parse_source_skips_repair_for_standard_cite_macros(db_session, tempdir, no_llm_keys) -> None:
+    paper = _create_paper(db_session)
+    source_path = Path(tempdir.name) / "source.tex"
+    source_path.write_text(
+        r"""
 \documentclass{article}
 \begin{document}
 \section{Intro}
@@ -173,29 +172,31 @@ We compare against prior work \cite{alpha2024}.
 \end{thebibliography}
 \end{document}
 """
-        )
-        artifact = Artifact(paper_id=self.paper.id, artifact_type="source", uri=str(source_path))
-        self.session.add(artifact)
-        self.session.commit()
+    )
+    artifact = Artifact(paper_id=paper.id, artifact_type="source", uri=str(source_path))
+    db_session.add(artifact)
+    db_session.commit()
 
-        repair_client = Mock(spec=ParserRepairClient)
-        repair_client.repair.return_value = ParseRepairResult(
-            raw_citation_keys=["alpha2024"],
-            cleaned_text="We compare against prior work alpha2024.",
-            used_repair=True,
-        )
+    repair_client = Mock(spec=ParserRepairClient)
+    repair_client.repair.return_value = ParseRepairResult(
+        raw_citation_keys=["alpha2024"],
+        cleaned_text="We compare against prior work alpha2024.",
+        used_repair=True,
+    )
 
-        service = ParserService(self.session, repair_client=repair_client)
-        _, refs, blocks = service.parse_paper(self.paper.id).as_tuple()
+    service = ParserService(db_session, repair_client=repair_client)
+    _, refs, blocks = service.parse_paper(paper.id).as_tuple()
 
-        self.assertEqual(1, refs)
-        self.assertEqual(1, blocks)
-        self.assertEqual(0, repair_client.repair.call_count)
+    assert refs == 1
+    assert blocks == 1
+    assert repair_client.repair.call_count == 0
 
-    def test_parse_source_ignores_commented_citations(self) -> None:
-        source_path = Path(self.tempdir.name) / "source.tex"
-        source_path.write_text(
-            r"""
+
+def test_parse_source_ignores_commented_citations(db_session, tempdir, no_llm_keys) -> None:
+    paper = _create_paper(db_session)
+    source_path = Path(tempdir.name) / "source.tex"
+    source_path.write_text(
+        r"""
 \documentclass{article}
 \begin{document}
 \section{Intro}
@@ -207,21 +208,22 @@ We compare against MiroFlow \citep{miromind2025miroflow}.
 \end{thebibliography}
 \end{document}
 """
-        )
-        artifact = Artifact(paper_id=self.paper.id, artifact_type="source", uri=str(source_path))
-        self.session.add(artifact)
-        self.session.commit()
+    )
+    artifact = Artifact(paper_id=paper.id, artifact_type="source", uri=str(source_path))
+    db_session.add(artifact)
+    db_session.commit()
 
-        service = ParserService(self.session)
-        _, refs, blocks = service.parse_paper(self.paper.id).as_tuple()
+    service = ParserService(db_session)
+    _, refs, blocks = service.parse_paper(paper.id).as_tuple()
 
-        self.assertEqual(1, refs)
-        self.assertEqual(1, blocks)
-        block = self.session.query(CitationBlock).filter(CitationBlock.has_citations.is_(True)).one()
-        self.assertEqual(["miromind2025miroflow"], block.raw_citation_keys)
+    assert refs == 1
+    assert blocks == 1
+    block = db_session.query(CitationBlock).filter(CitationBlock.has_citations.is_(True)).one()
+    assert block.raw_citation_keys == ["miromind2025miroflow"]
 
-    def test_llm_repair_client_derives_used_repair_without_model_flag(self) -> None:
-        settings.openrouter_api_key = "test-key"
+
+def test_llm_repair_client_derives_used_repair_without_model_flag(no_llm_keys) -> None:
+    with override_settings(openrouter_api_key="test-key"):
         client = LLMParserRepairClient()
 
         class StubLLMClient:
@@ -234,12 +236,13 @@ We compare against MiroFlow \citep{miromind2025miroflow}.
         client.client = StubLLMClient()
         repaired = client.repair("Text with \\mycite{BIBREF2}", ["BIBREF0"])
 
-        self.assertEqual(["BIBREF0", "BIBREF2"], repaired.raw_citation_keys)
-        self.assertEqual("Text with BIBREF2", repaired.cleaned_text)
-        self.assertTrue(repaired.used_repair)
+        assert repaired.raw_citation_keys == ["BIBREF0", "BIBREF2"]
+        assert repaired.cleaned_text == "Text with BIBREF2"
+        assert repaired.used_repair is True
 
-    def test_llm_repair_client_prompt_omits_schema_text(self) -> None:
-        settings.openrouter_api_key = "test-key"
+
+def test_llm_repair_client_prompt_omits_schema_text(no_llm_keys) -> None:
+    with override_settings(openrouter_api_key="test-key"):
         client = LLMParserRepairClient()
         client.client = Mock()
         client.client.generate_json.return_value = {
@@ -250,16 +253,17 @@ We compare against MiroFlow \citep{miromind2025miroflow}.
         client.repair("Text with BIBREF0", ["BIBREF0"])
 
         kwargs = client.client.generate_json.call_args.kwargs
-        self.assertIn("## Output Format", kwargs["user_text"])
-        self.assertIn("Do not return any explanatory text before or after the JSON object.", kwargs["user_text"])
-        self.assertIn("The JSON object must contain:", kwargs["user_text"])
-        self.assertIn("`raw_citation_keys`", kwargs["user_text"])
-        self.assertIn("`cleaned_text`", kwargs["user_text"])
-        self.assertIn("`used_repair`", kwargs["user_text"])
-        self.assertNotIn("The JSON must match this schema exactly", kwargs["user_text"])
+        assert "## Output Format" in kwargs["user_text"]
+        assert "Do not return any explanatory text before or after the JSON object." in kwargs["user_text"]
+        assert "The JSON object must contain:" in kwargs["user_text"]
+        assert "`raw_citation_keys`" in kwargs["user_text"]
+        assert "`cleaned_text`" in kwargs["user_text"]
+        assert "`used_repair`" in kwargs["user_text"]
+        assert "The JSON must match this schema exactly" not in kwargs["user_text"]
 
-    def test_llm_repair_client_propagates_exception(self) -> None:
-        settings.openrouter_api_key = "test-key"
+
+def test_llm_repair_client_propagates_exception(no_llm_keys) -> None:
+    with override_settings(openrouter_api_key="test-key"):
         client = LLMParserRepairClient()
 
         class FailingLLMClient:
@@ -267,12 +271,15 @@ We compare against MiroFlow \citep{miromind2025miroflow}.
                 raise TimeoutError("stuck response")
 
         client.client = FailingLLMClient()
-        with self.assertRaises(TimeoutError):
+        import pytest
+        with pytest.raises(TimeoutError):
             client.repair("Text with \\mycite{BIBREF2}", ["BIBREF0"])
 
-    def test_parse_source_tar_extracts_references_from_external_bib(self) -> None:
-        source_path = Path(self.tempdir.name) / "source.tar"
-        tex_text = r"""
+
+def test_parse_source_tar_extracts_references_from_external_bib(db_session, tempdir, no_llm_keys) -> None:
+    paper = _create_paper(db_session)
+    source_path = Path(tempdir.name) / "source.tar"
+    tex_text = r"""
 \documentclass{article}
 \begin{document}
 \section{Intro}
@@ -280,7 +287,7 @@ We follow prior work \cite{alpha2024,beta2023}.
 \bibliography{main}
 \end{document}
 """
-        bib_text = r"""
+    bib_text = r"""
 @article{alpha2024,
   title={Alpha Systems for Planning},
   author={Ada Lovelace and Grace Hopper},
@@ -295,96 +302,102 @@ We follow prior work \cite{alpha2024,beta2023}.
   year={2023}
 }
 """
-        with tarfile.open(source_path, "w") as archive:
-            for name, payload in {"main.tex": tex_text, "main.bib": bib_text}.items():
-                encoded = payload.encode()
-                info = tarfile.TarInfo(name=name)
-                info.size = len(encoded)
-                archive.addfile(info, io.BytesIO(encoded))
-        artifact = Artifact(paper_id=self.paper.id, artifact_type="source", uri=str(source_path))
-        self.session.add(artifact)
-        self.session.commit()
+    with tarfile.open(source_path, "w") as archive:
+        for name, payload in {"main.tex": tex_text, "main.bib": bib_text}.items():
+            encoded = payload.encode()
+            info = tarfile.TarInfo(name=name)
+            info.size = len(encoded)
+            archive.addfile(info, io.BytesIO(encoded))
+    artifact = Artifact(paper_id=paper.id, artifact_type="source", uri=str(source_path))
+    db_session.add(artifact)
+    db_session.commit()
 
-        service = ParserService(self.session, repair_client=FakeRepairClient())
-        _, refs, blocks = service.parse_paper(self.paper.id).as_tuple()
+    service = ParserService(db_session, repair_client=FakeRepairClient())
+    _, refs, blocks = service.parse_paper(paper.id).as_tuple()
 
-        self.assertEqual(2, refs)
-        self.assertEqual(1, blocks)
-        reference_rows = self.session.query(PaperReference).order_by(PaperReference.local_ref_id).all()
-        self.assertEqual("alpha2024", reference_rows[0].local_ref_id)
-        self.assertEqual("Alpha Systems for Planning", reference_rows[0].title)
-        self.assertEqual(2024, reference_rows[0].year)
-        self.assertEqual("Journal of Agents", reference_rows[0].venue)
-        self.assertEqual("beta2023", reference_rows[1].local_ref_id)
-        self.assertEqual("Beta Benchmarks for Search", reference_rows[1].title)
-        self.assertEqual(2023, reference_rows[1].year)
+    assert refs == 2
+    assert blocks == 1
+    reference_rows = db_session.query(PaperReference).order_by(PaperReference.local_ref_id).all()
+    assert reference_rows[0].local_ref_id == "alpha2024"
+    assert reference_rows[0].title == "Alpha Systems for Planning"
+    assert reference_rows[0].year == 2024
+    assert reference_rows[0].venue == "Journal of Agents"
+    assert reference_rows[1].local_ref_id == "beta2023"
+    assert reference_rows[1].title == "Beta Benchmarks for Search"
+    assert reference_rows[1].year == 2023
 
-    def test_pdf_text_fallback_parses_reference_blocks(self) -> None:
-        pdf_text_path = Path(self.tempdir.name) / "paper.txt"
-        pdf_text_path.write_text((FIXTURES / "pdf_fallback.txt").read_text())
-        artifact = Artifact(paper_id=self.paper.id, artifact_type="pdf_text", uri=str(pdf_text_path))
-        self.session.add(artifact)
-        self.session.commit()
 
-        service = ParserService(self.session)
-        _, refs, blocks = service.parse_paper(self.paper.id).as_tuple()
+def test_pdf_text_fallback_parses_reference_blocks(db_session, tempdir, no_llm_keys) -> None:
+    paper = _create_paper(db_session)
+    pdf_text_path = Path(tempdir.name) / "paper.txt"
+    pdf_text_path.write_text((FIXTURES / "pdf_fallback.txt").read_text())
+    artifact = Artifact(paper_id=paper.id, artifact_type="pdf_text", uri=str(pdf_text_path))
+    db_session.add(artifact)
+    db_session.commit()
 
-        self.assertEqual(2, refs)
-        self.assertEqual(2, blocks)
+    service = ParserService(db_session)
+    _, refs, blocks = service.parse_paper(paper.id).as_tuple()
 
-    def test_pdf_text_fallback_reconstructs_paragraphs_and_citation_ranges(self) -> None:
-        pdf_text_path = Path(self.tempdir.name) / "paper.txt"
-        pdf_text_path.write_text((FIXTURES / "pdf_complex_sample.txt").read_text())
-        artifact = Artifact(paper_id=self.paper.id, artifact_type="pdf_text", uri=str(pdf_text_path))
-        self.session.add(artifact)
-        self.session.commit()
+    assert refs == 2
+    assert blocks == 2
 
-        service = ParserService(self.session)
-        _, refs, blocks = service.parse_paper(self.paper.id).as_tuple()
 
-        self.assertEqual(5, refs)
-        self.assertEqual(2, blocks)
-        block_rows = self.session.query(CitationBlock).order_by(CitationBlock.id).all()
-        citation_rows = [row for row in block_rows if row.has_citations]
-        self.assertEqual(["REF1", "REF2", "REF3"], citation_rows[0].raw_citation_keys)
-        self.assertEqual(["REF4", "REF5"], citation_rows[1].raw_citation_keys)
-        self.assertIn("robust planning behavior in agents.", citation_rows[0].raw_text)
-        self.assertIn("API Match and Correctness.", citation_rows[1].raw_text)
-        section_titles = [block.section_title for block in block_rows]
-        self.assertIn("1. Introduction", section_titles)
-        self.assertIn("2. Metrics", section_titles)
+def test_pdf_text_fallback_reconstructs_paragraphs_and_citation_ranges(db_session, tempdir, no_llm_keys) -> None:
+    paper = _create_paper(db_session)
+    pdf_text_path = Path(tempdir.name) / "paper.txt"
+    pdf_text_path.write_text((FIXTURES / "pdf_complex_sample.txt").read_text())
+    artifact = Artifact(paper_id=paper.id, artifact_type="pdf_text", uri=str(pdf_text_path))
+    db_session.add(artifact)
+    db_session.commit()
 
-        reference_rows = self.session.query(PaperReference).order_by(PaperReference.id).all()
-        self.assertEqual("Alpha systems for planning", reference_rows[0].title)
-        self.assertEqual("Epsilon study of correctness", reference_rows[-1].title)
+    service = ParserService(db_session)
+    _, refs, blocks = service.parse_paper(paper.id).as_tuple()
 
-    def test_pdf_artifact_is_directly_parsed_and_persisted_as_pdf_text(self) -> None:
-        pdf_path = Path(self.tempdir.name) / "paper.pdf"
-        pdf_path.write_bytes(b"%PDF-1.4 fake")
-        artifact = Artifact(paper_id=self.paper.id, artifact_type="pdf", uri=str(pdf_path))
-        self.session.add(artifact)
-        self.session.commit()
+    assert refs == 5
+    assert blocks == 2
+    block_rows = db_session.query(CitationBlock).order_by(CitationBlock.id).all()
+    citation_rows = [row for row in block_rows if row.has_citations]
+    assert citation_rows[0].raw_citation_keys == ["REF1", "REF2", "REF3"]
+    assert citation_rows[1].raw_citation_keys == ["REF4", "REF5"]
+    assert "robust planning behavior in agents." in citation_rows[0].raw_text
+    assert "API Match and Correctness." in citation_rows[1].raw_text
+    section_titles = [block.section_title for block in block_rows]
+    assert "1. Introduction" in section_titles
+    assert "2. Metrics" in section_titles
 
-        class FakePage:
-            def __init__(self, text: str) -> None:
-                self._text = text
+    reference_rows = db_session.query(PaperReference).order_by(PaperReference.id).all()
+    assert reference_rows[0].title == "Alpha systems for planning"
+    assert reference_rows[-1].title == "Epsilon study of correctness"
 
-            def extract_text(self) -> str:
-                return self._text
 
-        class FakePdfReader:
-            def __init__(self, _path: str) -> None:
-                self.pages = [FakePage((FIXTURES / "pdf_fallback.txt").read_text())]
+def test_pdf_artifact_is_directly_parsed_and_persisted_as_pdf_text(db_session, tempdir, no_llm_keys) -> None:
+    paper = _create_paper(db_session)
+    pdf_path = Path(tempdir.name) / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    artifact = Artifact(paper_id=paper.id, artifact_type="pdf", uri=str(pdf_path))
+    db_session.add(artifact)
+    db_session.commit()
 
-        with patch("pypdf.PdfReader", FakePdfReader):
-            service = ParserService(self.session)
-            _, refs, blocks = service.parse_paper(self.paper.id).as_tuple()
+    class FakePage:
+        def __init__(self, text: str) -> None:
+            self._text = text
 
-        self.assertEqual(2, refs)
-        self.assertEqual(2, blocks)
-        pdf_text_artifact = (
-            self.session.query(Artifact)
-            .filter(Artifact.paper_id == self.paper.id, Artifact.artifact_type == "pdf_text")
-            .one()
-        )
-        self.assertTrue(Path(pdf_text_artifact.uri).exists())
+        def extract_text(self) -> str:
+            return self._text
+
+    class FakePdfReader:
+        def __init__(self, _path: str) -> None:
+            self.pages = [FakePage((FIXTURES / "pdf_fallback.txt").read_text())]
+
+    with patch("pypdf.PdfReader", FakePdfReader):
+        service = ParserService(db_session)
+        _, refs, blocks = service.parse_paper(paper.id).as_tuple()
+
+    assert refs == 2
+    assert blocks == 2
+    pdf_text_artifact = (
+        db_session.query(Artifact)
+        .filter(Artifact.paper_id == paper.id, Artifact.artifact_type == "pdf_text")
+        .one()
+    )
+    assert Path(pdf_text_artifact.uri).exists()

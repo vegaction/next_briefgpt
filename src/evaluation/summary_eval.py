@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from briefgpt_arxiv.config import LLMEndpointSettings, settings
 from briefgpt_arxiv.llm_client import BaseLLMClient, create_llm_client
 from briefgpt_arxiv.models import CitationMention
-from briefgpt_arxiv.utils import ensure_parent, normalize_whitespace
+from briefgpt_arxiv.util import ensure_parent, normalize_whitespace
 
 
 SUMMARY_EVAL_JUDGE_PROMPT_VERSION = "summary-eval-mvp-v1"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from briefgpt_arxiv.models import Paper
 from briefgpt_arxiv.services.contracts import PipelineRunResult
 from briefgpt_arxiv.services.crawler import CrawlerService
 from briefgpt_arxiv.services.extractor import ExtractorService
@@ -30,6 +31,34 @@ class OrchestratorService:
         rerun_extract: bool = True,
     ) -> list[PipelineRunResult]:
         papers = self.crawler.crawl_arxiv_ids(arxiv_ids)
+        return self._parse_and_extract(
+            papers, rerun_parse=rerun_parse, rerun_extract=rerun_extract,
+        )
+
+    def run_parse_extract(
+        self,
+        papers: list[Paper],
+        *,
+        crawl_status: str = "fetched",
+        rerun_parse: bool = True,
+        rerun_extract: bool = True,
+    ) -> list[PipelineRunResult]:
+        """Run parse + extract on already-crawled papers (e.g. local-artifact mode)."""
+        return self._parse_and_extract(
+            papers,
+            crawl_status_override=crawl_status,
+            rerun_parse=rerun_parse,
+            rerun_extract=rerun_extract,
+        )
+
+    def _parse_and_extract(
+        self,
+        papers: list[Paper],
+        *,
+        crawl_status_override: str | None = None,
+        rerun_parse: bool = True,
+        rerun_extract: bool = True,
+    ) -> list[PipelineRunResult]:
         results: list[PipelineRunResult] = []
         for paper in papers:
             parse_result = self.parser.parse_paper(paper.id, rerun=rerun_parse)
@@ -39,7 +68,7 @@ class OrchestratorService:
                     paper_id=paper.id,
                     arxiv_id=paper.arxiv_id,
                     version=paper.version,
-                    crawl_status=paper.ingest_status,
+                    crawl_status=crawl_status_override or paper.ingest_status,
                     parse=parse_result,
                     extract=extract_result,
                 )

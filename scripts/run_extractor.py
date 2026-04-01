@@ -17,7 +17,7 @@ from briefgpt_arxiv.config import settings
 from briefgpt_arxiv.db import SessionLocal, init_db
 from briefgpt_arxiv.models import Paper
 from briefgpt_arxiv.services.extractor import ExtractionConfigurationError, ExtractorService
-from briefgpt_arxiv.utils import format_arxiv_id, split_arxiv_id
+from briefgpt_arxiv.util import format_arxiv_id, split_arxiv_id
 
 
 def build_parser() -> argparse.ArgumentParser:

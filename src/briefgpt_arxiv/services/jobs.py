@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from briefgpt_arxiv.models import IngestionJob
-from briefgpt_arxiv.utils import utcnow_naive
+from briefgpt_arxiv.util import utcnow_naive
 
 
 class JobTracker:
@@ -48,6 +51,22 @@ class JobTracker:
         self.session.add(job)
         self.session.flush()
         return job
+
+    @contextmanager
+    def tracked_operation(
+        self, job_type: str, target_id: int,
+    ) -> Generator[IngestionJob, None, None]:
+        """Context manager: start job, commit on success, rollback + record failure on error."""
+        job = self.start(job_type=job_type, target_id=target_id)
+        try:
+            yield job
+            self.finish(job)
+            self.session.commit()
+        except Exception as exc:
+            self.session.rollback()
+            self.record_failure(job_type=job_type, target_id=target_id, error_message=str(exc))
+            self.session.commit()
+            raise
 
     def _next_attempt_count(self, job_type: str, target_id: int) -> int:
         existing_max = self.session.scalar(

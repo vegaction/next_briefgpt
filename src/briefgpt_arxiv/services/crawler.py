@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from briefgpt_arxiv.config import settings
 from briefgpt_arxiv.models import Artifact, Paper
 from briefgpt_arxiv.services.jobs import JobTracker
-from briefgpt_arxiv.utils import ensure_parent, format_arxiv_id, sha256sum, split_arxiv_id
+from briefgpt_arxiv.util import ensure_parent, format_arxiv_id, sha256sum, split_arxiv_id
 
 
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
@@ -101,22 +101,14 @@ class CrawlerService:
     def crawl_arxiv_ids(self, arxiv_ids: list[str]) -> list[Paper]:
         papers: list[Paper] = []
         for arxiv_id in arxiv_ids:
-            job = self.job_tracker.start(job_type="crawl", target_id=0)
-            try:
+            with self.job_tracker.tracked_operation("crawl", target_id=0) as job:
                 record = self.client.fetch_record(arxiv_id)
                 paper = self._upsert_paper(record)
                 job.target_id = paper.id
                 self._persist_artifact(paper, "pdf", record.pdf_url, suffix=".pdf")
                 self._persist_artifact(paper, "source", record.source_url, suffix=".tar")
                 paper.ingest_status = "fetched"
-                self.job_tracker.finish(job)
                 papers.append(paper)
-                self.session.commit()
-            except Exception as exc:
-                self.session.rollback()
-                self.job_tracker.record_failure(job_type="crawl", target_id=0, error_message=str(exc))
-                self.session.commit()
-                raise
         return papers
 
     def _upsert_paper(self, record: ArxivPaperRecord) -> Paper:

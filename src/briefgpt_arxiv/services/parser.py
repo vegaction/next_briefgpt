@@ -26,7 +26,7 @@ from briefgpt_arxiv.prompts import (
 )
 from briefgpt_arxiv.services.contracts import ParseInputSelection, ParseRunResult
 from briefgpt_arxiv.services.jobs import JobTracker
-from briefgpt_arxiv.utils import ensure_parent, normalize_whitespace, sha256sum, utcnow_naive
+from briefgpt_arxiv.util import ensure_parent, normalize_whitespace, sha256sum, utcnow_naive
 
 @dataclass(slots=True)
 class ReferencePayload:
@@ -168,8 +168,7 @@ class ParserService:
             self.session.commit()
             return result
 
-        job = self.job_tracker.start(job_type="parse", target_id=paper_id)
-        try:
+        with self.job_tracker.tracked_operation("parse", target_id=paper_id):
             parsed = self._parse_selection(paper, selection)
             cleanup_performed = self._has_parse_outputs(paper_id)
             if cleanup_performed:
@@ -179,7 +178,6 @@ class ParserService:
             paper.parse_status = "parsed"
             paper.parsed_at = utcnow_naive()
             paper.ingest_status = "parsed"
-            self.job_tracker.finish(job)
             self._write_parse_report(
                 paper=paper,
                 selection=selection,
@@ -194,7 +192,6 @@ class ParserService:
                     status="parsed",
                 ),
             )
-            self.session.commit()
             return self._build_parse_result(
                 paper=paper,
                 selection=selection,
@@ -204,11 +201,6 @@ class ParserService:
                 cleanup_performed=cleanup_performed,
                 status="parsed",
             )
-        except Exception as exc:
-            self.session.rollback()
-            self.job_tracker.record_failure(job_type="parse", target_id=paper_id, error_message=str(exc))
-            self.session.commit()
-            raise
 
     def clear_parse_outputs(self, paper_id: int) -> None:
         paper = self.session.get(Paper, paper_id)

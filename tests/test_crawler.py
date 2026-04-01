@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from unittest import TestCase
 
 from briefgpt_arxiv.models import Artifact, IngestionJob, Paper
 from briefgpt_arxiv.services.crawler import ArxivClient, ArxivPaperRecord, CrawlerService
-from tests.helpers import FIXTURES, get_session, reset_database
+from tests.conftest import FIXTURES
 
 
 class FakeArxivClient(ArxivClient):
@@ -26,44 +24,35 @@ class FakeArxivClient(ArxivClient):
         return "checksum", destination.stat().st_size
 
 
-class CrawlerServiceTests(TestCase):
-    def setUp(self) -> None:
-        reset_database()
-        self.session = get_session()
-        self.tempdir = TemporaryDirectory()
+def test_crawl_creates_paper_and_artifacts(db_session, tempdir) -> None:
+    service = CrawlerService(
+        db_session,
+        client=FakeArxivClient(),
+        artifact_root=Path(tempdir.name),
+    )
 
-    def tearDown(self) -> None:
-        self.session.close()
-        self.tempdir.cleanup()
+    papers = service.crawl_arxiv_ids(["2603.15726v1"])
 
-    def test_crawl_creates_paper_and_artifacts(self) -> None:
-        service = CrawlerService(
-            self.session,
-            client=FakeArxivClient(),
-            artifact_root=Path(self.tempdir.name),
-        )
+    assert len(papers) == 1
+    assert db_session.query(Paper).count() == 1
+    assert db_session.query(Artifact).count() == 2
+    assert papers[0].ingest_status == "fetched"
+    job = db_session.query(IngestionJob).one()
+    assert job.job_type == "crawl"
+    assert job.status == "completed"
+    assert job.attempt_count == 1
+    assert job.finished_at is not None
 
-        papers = service.crawl_arxiv_ids(["2603.15726v1"])
 
-        self.assertEqual(1, len(papers))
-        self.assertEqual(1, self.session.query(Paper).count())
-        self.assertEqual(2, self.session.query(Artifact).count())
-        self.assertEqual("fetched", papers[0].ingest_status)
-        job = self.session.query(IngestionJob).one()
-        self.assertEqual("crawl", job.job_type)
-        self.assertEqual("completed", job.status)
-        self.assertEqual(1, job.attempt_count)
-        self.assertIsNotNone(job.finished_at)
+def test_crawl_is_idempotent_for_same_version(db_session, tempdir) -> None:
+    service = CrawlerService(
+        db_session,
+        client=FakeArxivClient(),
+        artifact_root=Path(tempdir.name),
+    )
 
-    def test_crawl_is_idempotent_for_same_version(self) -> None:
-        service = CrawlerService(
-            self.session,
-            client=FakeArxivClient(),
-            artifact_root=Path(self.tempdir.name),
-        )
+    service.crawl_arxiv_ids(["2603.15726v1"])
+    service.crawl_arxiv_ids(["2603.15726v1"])
 
-        service.crawl_arxiv_ids(["2603.15726v1"])
-        service.crawl_arxiv_ids(["2603.15726v1"])
-
-        self.assertEqual(1, self.session.query(Paper).count())
-        self.assertEqual(2, self.session.query(Artifact).count())
+    assert db_session.query(Paper).count() == 1
+    assert db_session.query(Artifact).count() == 2

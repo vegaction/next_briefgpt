@@ -15,11 +15,9 @@ from briefgpt_arxiv.config import settings
 from briefgpt_arxiv.db import SessionLocal, init_db
 from briefgpt_arxiv.models import Artifact, Paper
 from briefgpt_arxiv.services.contracts import PipelineRunResult
-from briefgpt_arxiv.services.extractor import ExtractorService
 from briefgpt_arxiv.services.jobs import JobTracker
 from briefgpt_arxiv.services.orchestrator import OrchestratorService
-from briefgpt_arxiv.services.parser import ParserService
-from briefgpt_arxiv.utils import format_arxiv_id, sha256sum, split_arxiv_id
+from briefgpt_arxiv.util import format_arxiv_id, sha256sum, split_arxiv_id
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -110,50 +108,28 @@ def upsert_local_artifact_paper(session, arxiv_id: str) -> Paper:
     return paper
 
 
-def run_local_artifact_pipeline(
-    session,
-    arxiv_ids: list[str],
-    *,
-    rerun_parse: bool,
-    rerun_extract: bool,
-) -> list[PipelineRunResult]:
-    parser = ParserService(session)
-    extractor = ExtractorService(session)
-    results: list[PipelineRunResult] = []
-    for arxiv_id in arxiv_ids:
-        paper = upsert_local_artifact_paper(session, arxiv_id)
-        parse_result = parser.parse_paper(paper.id, rerun=rerun_parse)
-        extract_result = extractor.extract_for_paper_result(paper.id, rerun=rerun_extract)
-        results.append(
-            PipelineRunResult(
-                paper_id=paper.id,
-                arxiv_id=paper.arxiv_id,
-                version=paper.version,
-                crawl_status="local-artifacts",
-                parse=parse_result,
-                extract=extract_result,
-            )
-        )
-    return results
-
-
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = build_parser().parse_args()
     init_db()
     with SessionLocal() as session:
+        orchestrator = OrchestratorService(session)
+        rerun_parse = not args.skip_parse_if_parsed
+        rerun_extract = not args.skip_extract_if_ready
+
         if args.mode == "crawl":
-            results = OrchestratorService(session).run_pipeline_for_arxiv_ids(
+            results = orchestrator.run_pipeline_for_arxiv_ids(
                 args.arxiv_ids,
-                rerun_parse=not args.skip_parse_if_parsed,
-                rerun_extract=not args.skip_extract_if_ready,
+                rerun_parse=rerun_parse,
+                rerun_extract=rerun_extract,
             )
         else:
-            results = run_local_artifact_pipeline(
-                session,
-                args.arxiv_ids,
-                rerun_parse=not args.skip_parse_if_parsed,
-                rerun_extract=not args.skip_extract_if_ready,
+            papers = [upsert_local_artifact_paper(session, aid) for aid in args.arxiv_ids]
+            results = orchestrator.run_parse_extract(
+                papers,
+                crawl_status="local-artifacts",
+                rerun_parse=rerun_parse,
+                rerun_extract=rerun_extract,
             )
 
     payload = [
