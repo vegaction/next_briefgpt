@@ -10,3 +10,6 @@ logs/
 citation_mentions_first_rows.csv
 
 .DS_Store
+
+artifacts/
+data/
