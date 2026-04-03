@@ -54,7 +54,7 @@ def post_json_with_retries(
             if not should_retry_http_error(exc):
                 raise
             last_error = exc
-        except (requests.Timeout, requests.ConnectionError) as exc:
+        except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as exc:
             last_error = exc
         if attempt == 2:
             break

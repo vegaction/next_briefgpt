@@ -36,6 +36,27 @@ def test_openai_compatible_client_retries_transient_errors(mock_post, _mock_slee
     assert mock_post.call_count == 2
 
 
+@patch("briefgpt_arxiv.llm_client.time.sleep", return_value=None)
+@patch("briefgpt_arxiv.llm_client.requests.post")
+def test_openai_compatible_client_retries_chunked_encoding_errors(mock_post, _mock_sleep) -> None:
+    success_response = Mock()
+    success_response.raise_for_status.return_value = None
+    success_response.json.return_value = {"choices": [{"message": {"content": '{"ok": true}'}}]}
+    mock_post.side_effect = [
+        requests.exceptions.ChunkedEncodingError("Response ended prematurely"),
+        success_response,
+    ]
+
+    client = OpenAICompatibleClient(
+        endpoint=LLMEndpointSettings(provider="openai_compatible", model_name="test-model"),
+        api_key="test-key",
+    )
+    payload = client.generate_json(system_instruction="Return JSON.", user_text="{}")
+
+    assert payload == {"ok": True}
+    assert mock_post.call_count == 2
+
+
 @patch("briefgpt_arxiv.llm_client.requests.post")
 def test_openai_compatible_client_sets_explicit_timeout(mock_post) -> None:
     success_response = Mock()
